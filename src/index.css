@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+:root {
+  --cydia-accent: #111111;
+  --cydia-accent-text: #FFFFFF;
+  --cydia-switch-knob: #FFFFFF;
+  --cydia-user-bg: #111111;
+  --cydia-user-text: #FFFFFF;
+  --cydia-bot-bg: #FFFFFF;
+  --cydia-bot-text: #111111;
+  --cydia-bot-border: #EAEAEA;
+  --cydia-chat-bg: #FAFAFA;
+  --cydia-chat-muted: #8E8E93;
+  --cydia-chat-strong: #111111;
+}
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@keyframes dotBounce {
+  0%, 80%, 100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.typing-dot {
+  animation: dotBounce 1.2s infinite ease-in-out both;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
