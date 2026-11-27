@@ -13,11 +13,17 @@ interface AssetsFetcher {
   fetch(request: Request): Promise<Response>;
 }
 
+interface SecretStoreBinding {
+  get(): Promise<string | null>;
+}
+
+type SecretOrString = string | SecretStoreBinding;
+
 interface CloudflareEnv {
-  GEMINI_API_KEY?: string;
-  VITE_GEMINI_API_KEY?: string;
-  API_KEY?: string;
-  GOOGLE_API_KEY?: string;
+  GEMINI_API_KEY?: SecretOrString;
+  VITE_GEMINI_API_KEY?: SecretOrString;
+  API_KEY?: SecretOrString;
+  GOOGLE_API_KEY?: SecretOrString;
   GEMINI_MODEL?: string;
   ASSETS: AssetsFetcher;
   [key: string]: unknown;
@@ -44,7 +50,7 @@ function jsonResponse(payload: Record<string, unknown>, status = 200): Response 
   });
 }
 
-function resolveApiKey(env: CloudflareEnv): string {
+async function resolveApiKey(env: CloudflareEnv): Promise<string> {
   const candidates = [
     env.GEMINI_API_KEY,
     env.VITE_GEMINI_API_KEY,
@@ -54,6 +60,16 @@ function resolveApiKey(env: CloudflareEnv): string {
   for (const val of candidates) {
     if (typeof val === 'string' && val.trim().length > 0) {
       return val.trim();
+    }
+    if (val && typeof val === 'object' && 'get' in val && typeof (val as SecretStoreBinding).get === 'function') {
+      try {
+        const resolved = await (val as SecretStoreBinding).get();
+        if (typeof resolved === 'string' && resolved.trim().length > 0) {
+          return resolved.trim();
+        }
+      } catch {
+        // Ignore and check next candidate
+      }
     }
   }
   return '';
@@ -122,7 +138,7 @@ function mapGeminiError(err: unknown, fallbackMessage: string): Response {
 }
 
 async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Response> {
-  const apiKey = resolveApiKey(env);
+  const apiKey = await resolveApiKey(env);
   if (!apiKey) {
     return missingKeyResponse(env);
   }
@@ -196,7 +212,7 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
 }
 
 async function handleTranscribe(request: Request, env: CloudflareEnv): Promise<Response> {
-  const apiKey = resolveApiKey(env);
+  const apiKey = await resolveApiKey(env);
   if (!apiKey) {
     return missingKeyResponse(env);
   }
