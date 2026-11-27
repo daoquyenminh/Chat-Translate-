@@ -1,10 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Settings } from 'lucide-react';
-import { ChatMessage, ChatTheme, TranslationLog, TranslationMode } from './types';
+import { ChatMessage, ChatTheme, TranslationMode } from './types';
 import { DEFAULT_THEME, INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
-import { LogsPanel } from './components/LogsPanel';
 import { ThemeSettingsModal } from './components/ThemeSettingsModal';
 import { copyTextToClipboard } from './utils/formatters';
 import { applyThemeCssVars } from './utils/color';
@@ -27,7 +26,6 @@ export default function App() {
     'cydia_translate_messages_v2',
     INITIAL_MESSAGES
   );
-  const [logs, setLogs] = useLocalStorage<TranslationLog[]>('cydia_translate_logs_v2', []);
 
   const [isLoading, setIsLoading] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
@@ -36,7 +34,6 @@ export default function App() {
 
   const copyTimerRef = useRef<number | null>(null);
 
-  // Strip out any legacy welcome bubble stored from earlier sessions
   const visibleMessages = useMemo(
     () => messages.filter((m) => m.id !== 'welcome-msg'),
     [messages]
@@ -77,15 +74,9 @@ export default function App() {
     async (
       text: string,
       targetMode: TranslationMode,
-      historyMessages: ChatMessage[],
       messageId: string,
       regenerate: boolean
     ): Promise<{ ok: true; translation: string } | { ok: false; error: string }> => {
-      const recentHistory = historyMessages
-        .filter((m) => !m.isError && m.id !== 'welcome-msg')
-        .slice(-2)
-        .map((m) => ({ role: m.role, text: m.text }));
-
       const fetchOnce = () =>
         fetch('/api/translate', {
           method: 'POST',
@@ -93,7 +84,6 @@ export default function App() {
           body: JSON.stringify({
             text,
             mode: targetMode,
-            history: recentHistory,
             regenerate,
           }),
         });
@@ -210,12 +200,11 @@ export default function App() {
         sourceText: text,
       };
 
-      const prevMessages = visibleMessages;
       setMessages((curr) => [...curr.filter((m) => m.id !== 'welcome-msg'), userMsg, placeholderMsg]);
       setIsLoading(true);
       setStreamingMessageId(assistantId);
 
-      const result = await streamTranslation(text, activeMode, prevMessages, assistantId, false);
+      const result = await streamTranslation(text, activeMode, assistantId, false);
       const finishIso = new Date().toISOString();
 
       if (result.ok) {
@@ -226,16 +215,6 @@ export default function App() {
               : m
           )
         );
-        setLogs((curr) => [
-          {
-            id: `log-${Date.now()}`,
-            input: text,
-            output: result.translation,
-            mode: activeMode,
-            createdAt: finishIso,
-          },
-          ...curr,
-        ]);
         void triggerCopy(assistantId, result.translation);
       } else {
         setMessages((curr) =>
@@ -250,15 +229,13 @@ export default function App() {
       setStreamingMessageId(null);
       setIsLoading(false);
     },
-    [visibleMessages, mode, setLogs, setMessages, streamTranslation, triggerCopy]
+    [mode, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleRegenerate = useCallback(
     async (messageId: string, sourceText: string) => {
       if (isLoading) return;
       const activeMode = mode;
-      const idx = visibleMessages.findIndex((m) => m.id === messageId);
-      const historyBefore = idx > 0 ? visibleMessages.slice(0, idx - 1) : [];
 
       setMessages((curr) =>
         curr.map((m) =>
@@ -270,13 +247,7 @@ export default function App() {
       setIsLoading(true);
       setStreamingMessageId(messageId);
 
-      const result = await streamTranslation(
-        sourceText,
-        activeMode,
-        historyBefore,
-        messageId,
-        true
-      );
+      const result = await streamTranslation(sourceText, activeMode, messageId, true);
       const finishIso = new Date().toISOString();
 
       if (result.ok) {
@@ -293,16 +264,6 @@ export default function App() {
               : m
           )
         );
-        setLogs((curr) => [
-          {
-            id: `log-${Date.now()}`,
-            input: sourceText,
-            output: result.translation,
-            mode: activeMode,
-            createdAt: finishIso,
-          },
-          ...curr,
-        ]);
         void triggerCopy(messageId, result.translation);
       } else {
         setMessages((curr) =>
@@ -317,77 +278,46 @@ export default function App() {
       setStreamingMessageId(null);
       setIsLoading(false);
     },
-    [isLoading, visibleMessages, mode, setLogs, setMessages, streamTranslation, triggerCopy]
+    [isLoading, mode, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleClearChat = () => {
     setMessages([]);
   };
 
-  const handleDeleteLog = (id: string) => {
-    setLogs((curr) => curr.filter((entry) => entry.id !== id));
-  };
-
-  const handleClearLogs = () => {
-    setLogs([]);
-  };
-
   return (
     <div className="h-dvh w-full bg-[#F2F2F4] flex justify-center overflow-hidden">
-      <div className="w-full max-w-[1440px] h-full bg-white lg:grid lg:grid-cols-[minmax(0,1fr)_390px] flex flex-col lg:border-x border-[#E8E8EB]">
-        {/* PRIMARY COLUMN */}
-        <div className="flex flex-col flex-1 min-h-0 min-w-0">
-          <header className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[64px] bg-white border-b border-[#EFEFF1] shrink-0">
-            <div className="flex items-center gap-3 min-w-0">
-              <CydiaStarMark />
-              <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
-                Cydia Translate
-              </h1>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowThemeSettings(true)}
-              aria-label="Cài đặt"
-              title="Cài đặt"
-              className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
-            >
-              <Settings className="w-5 h-5" strokeWidth={1.9} />
-            </button>
-          </header>
-
-          {/* Chat Workspace */}
-          <ChatPanel
-            messages={visibleMessages}
-            isLoading={isLoading}
-            streamingMessageId={streamingMessageId}
-            copiedMessageId={copiedMessageId}
-            onCopyMessage={triggerCopy}
-            onSend={handleSend}
-            onRegenerate={handleRegenerate}
-            onClearChat={handleClearChat}
-          />
-        </div>
-
-        {/* DESKTOP RIGHT PANEL: Saved Logs */}
-        <aside className="hidden lg:flex flex-col min-h-0 border-l border-[#EFEFF1] bg-white">
-          <div className="flex items-center justify-between px-5 h-[64px] bg-white border-b border-[#EFEFF1] shrink-0">
-            <h2 className="text-[15px] font-semibold text-[#111111]">
-              Log đã lưu
-            </h2>
-            <span className="text-[12px] text-[#8E8E93] tabular-nums">
-              {logs.length} mục
-            </span>
+      <div className="w-full max-w-[960px] h-full bg-white flex flex-col sm:border-x border-[#E8E8EB]">
+        <header className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[64px] bg-white border-b border-[#EFEFF1] shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <CydiaStarMark />
+            <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
+              Cydia Translate
+            </h1>
           </div>
-          <LogsPanel
-            logs={logs}
-            onDeleteLog={handleDeleteLog}
-            onClearLogs={handleClearLogs}
-          />
-        </aside>
+
+          <button
+            type="button"
+            onClick={() => setShowThemeSettings(true)}
+            aria-label="Cài đặt"
+            title="Cài đặt"
+            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
+          >
+            <Settings className="w-5 h-5" strokeWidth={1.9} />
+          </button>
+        </header>
+
+        <ChatPanel
+          messages={visibleMessages}
+          isLoading={isLoading}
+          streamingMessageId={streamingMessageId}
+          copiedMessageId={copiedMessageId}
+          onCopyMessage={triggerCopy}
+          onSend={handleSend}
+          onRegenerate={handleRegenerate}
+        />
       </div>
 
-      {/* Settings Modal */}
       <ThemeSettingsModal
         isOpen={showThemeSettings}
         mode={mode}

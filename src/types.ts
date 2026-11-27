@@ -10,14 +10,6 @@ export interface ChatMessage {
   isError?: boolean;
 }
 
-export interface TranslationLog {
-  id: string;
-  input: string;
-  output: string;
-  mode: TranslationMode;
-  createdAt: string;
-}
-
 export interface ChatTheme {
   accentColor: string;
   userBubbleColor: string;

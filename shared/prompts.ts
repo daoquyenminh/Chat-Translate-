@@ -1,7 +1,6 @@
 export type TranslationMode = 'chat' | 'formal';
 
 export const TRANSLATE_MODEL = 'gemini-3.1-flash-lite';
-export const TRANSCRIBE_MODEL = 'gemini-3.5-transcribe';
 
 export const CHAT_SYSTEM_INSTRUCTION = `You are a fast plain-text English translator and grammar corrector.
 STRICT RULES:
@@ -22,9 +21,6 @@ STRICT RULES:
 5. ALWAYS write complete, grammatically proper sentences with full subjects ("I", "you", "we", etc.), predicates, accurate capitalization, and proper punctuation (Example: "tôi cần chuyển cái này sang factory 2" -> "I need to transfer this to Factory 2.").
 6. When making a request or asking for a favor, ALWAYS use polite modals like "Could you..." or "Could you please..." instead of "Can you..." (Example: "Could you please give this to Mr. Mat?", NEVER "Can you give this to Mr. Mat?").
 7. Do NOT use slang or texting abbreviations (avoid u, rn, tbh, gonna, gotta). Keep proper nouns, brand/facility names, codes, and technical terms unchanged.`;
-
-export const TRANSCRIBE_PROMPT =
-  'Transcribe the spoken audio accurately in its original spoken language (Vietnamese, English, or a mix of both). Output ONLY the plain transcribed text without explanations, labels, quotes, or timestamps. If there is only silence or no intelligible speech, output an empty string.';
 
 export function buildTranslatePrompt(text: string, regenerate?: boolean): string {
   if (regenerate) {

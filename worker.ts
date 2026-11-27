@@ -2,8 +2,6 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   CHAT_SYSTEM_INSTRUCTION,
   FORMAL_SYSTEM_INSTRUCTION,
-  TRANSCRIBE_MODEL,
-  TRANSCRIBE_PROMPT,
   TRANSLATE_MODEL,
   TranslationMode,
   buildTranslatePrompt,
@@ -33,11 +31,6 @@ interface TranslateBody {
   text?: string;
   mode?: TranslationMode;
   regenerate?: boolean;
-}
-
-interface TranscribeBody {
-  audioBase64?: string;
-  mimeType?: string;
 }
 
 function jsonResponse(payload: Record<string, unknown>, status = 200): Response {
@@ -80,7 +73,7 @@ function missingKeyResponse(env: CloudflareEnv): Response {
   const detail =
     envKeys.length > 0
       ? ` (đang có biến: ${envKeys.join(', ')})`
-      : ' (hiện chưa có biến runtime nào — lưu ý thêm ở mục Variables and Secrets, không phải Build variables)';
+      : ' (hiện chưa có biến runtime nào — lưu ý thêm ở mục Variables and Secrets hoặc Secrets Store)';
   return jsonResponse(
     {
       error: `Chưa tìm thấy GEMINI_API_KEY trên Cloudflare Worker${detail}.`,
@@ -113,7 +106,7 @@ function mapGeminiError(err: unknown, fallbackMessage: string): Response {
     return jsonResponse(
       {
         error:
-          'GEMINI_API_KEY không hợp lệ hoặc bị từ chối (403). Kiểm tra lại key trong Cloudflare Settings > Variables and Secrets.',
+          'GEMINI_API_KEY không hợp lệ hoặc bị từ chối (403). Kiểm tra lại key trong Cloudflare Settings.',
       },
       403
     );
@@ -128,7 +121,7 @@ function mapGeminiError(err: unknown, fallbackMessage: string): Response {
 
   if (status === 404 || msg.includes('NOT_FOUND')) {
     return jsonResponse(
-      { error: `Model không khả dụng với API key hiện tại (404).` },
+      { error: 'Model không khả dụng với API key hiện tại (404).' },
       404
     );
   }
@@ -211,60 +204,12 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
   }
 }
 
-async function handleTranscribe(request: Request, env: CloudflareEnv): Promise<Response> {
-  const apiKey = await resolveApiKey(env);
-  if (!apiKey) {
-    return missingKeyResponse(env);
-  }
-
-  let body: TranscribeBody;
-  try {
-    body = (await request.json()) as TranscribeBody;
-  } catch {
-    return jsonResponse({ error: 'Dữ liệu âm thanh không hợp lệ.' }, 400);
-  }
-
-  const audioBase64 = typeof body.audioBase64 === 'string' ? body.audioBase64.trim() : '';
-  const rawMime = typeof body.mimeType === 'string' ? body.mimeType.trim() : 'audio/webm';
-  const mimeType = rawMime.split(';')[0] || 'audio/webm';
-
-  if (!audioBase64) {
-    return jsonResponse({ error: 'Không có dữ liệu âm thanh.' }, 400);
-  }
-
-  try {
-    const ai = createClient(apiKey);
-    const response = await ai.models.generateContent({
-      model: TRANSCRIBE_MODEL,
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType,
-              data: audioBase64,
-            },
-          },
-          { text: TRANSCRIBE_PROMPT },
-        ],
-      },
-    });
-
-    return jsonResponse({ text: (response.text ?? '').trim() }, 200);
-  } catch (err) {
-    return mapGeminiError(err, 'Không nhận diện được giọng nói lúc này. Thử lại nhé.');
-  }
-}
-
 export default {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'POST' && url.pathname === '/api/translate') {
       return handleTranslate(request, env);
-    }
-
-    if (request.method === 'POST' && url.pathname === '/api/transcribe') {
-      return handleTranscribe(request, env);
     }
 
     return env.ASSETS.fetch(request);

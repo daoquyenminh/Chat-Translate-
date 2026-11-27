@@ -7,8 +7,6 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   CHAT_SYSTEM_INSTRUCTION,
   FORMAL_SYSTEM_INSTRUCTION,
-  TRANSCRIBE_MODEL,
-  TRANSCRIBE_PROMPT,
   TRANSLATE_MODEL,
   TranslationMode,
   buildTranslatePrompt,
@@ -23,11 +21,6 @@ interface TranslateRequestBody {
   text?: string;
   mode?: TranslationMode;
   regenerate?: boolean;
-}
-
-interface TranscribeRequestBody {
-  audioBase64?: string;
-  mimeType?: string;
 }
 
 let cachedClient: GoogleGenAI | null = null;
@@ -52,63 +45,7 @@ function getGenAIClient(): GoogleGenAI {
 
 async function startServer(): Promise<void> {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
-
-  app.post('/api/transcribe', async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as TranscribeRequestBody;
-    const audioBase64 = typeof body.audioBase64 === 'string' ? body.audioBase64.trim() : '';
-    const rawMime = typeof body.mimeType === 'string' ? body.mimeType.trim() : 'audio/webm';
-    const mimeType = rawMime.split(';')[0] || 'audio/webm';
-
-    if (!audioBase64) {
-      res.status(400).json({ error: 'Không có dữ liệu âm thanh.' });
-      return;
-    }
-
-    try {
-      const ai = getGenAIClient();
-      const response = await ai.models.generateContent({
-        model: TRANSCRIBE_MODEL,
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: audioBase64,
-              },
-            },
-            { text: TRANSCRIBE_PROMPT },
-          ],
-        },
-      });
-
-      const transcript = (response.text ?? '').trim();
-      res.setHeader('X-Cydia-Translate', '1');
-      res.json({ text: transcript });
-    } catch (err: unknown) {
-      const errorObj = err as { status?: number; message?: string };
-      const msg = errorObj?.message ?? '';
-
-      if (msg === 'MISSING_API_KEY') {
-        res.status(500).json({
-          error: 'Chưa cấu hình GEMINI_API_KEY trong Settings > Secrets.',
-        });
-        return;
-      }
-
-      if (errorObj?.status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
-        res.status(429).json({
-          error: 'Đang vượt giới hạn lượt gọi tạm thời. Thử lại sau vài giây nhé.',
-        });
-        return;
-      }
-
-      console.error('[/api/transcribe] Gemini error:', err);
-      res.status(502).json({
-        error: 'Không nhận diện được giọng nói lúc này. Thử lại nhé.',
-      });
-    }
-  });
+  app.use(express.json({ limit: '512kb' }));
 
   app.post('/api/translate', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as TranslateRequestBody;
