@@ -50,6 +50,44 @@ export default function App() {
     applyThemeCssVars(theme);
   }, [theme]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    let rafId = 0;
+
+    const syncViewport = () => {
+      cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(() => {
+        const vv = window.visualViewport;
+        if (vv) {
+          root.style.setProperty('--app-vh', `${Math.round(vv.height)}px`);
+          root.style.setProperty('--app-offset-top', `${Math.max(0, Math.round(vv.offsetTop))}px`);
+        } else {
+          root.style.setProperty('--app-vh', `${window.innerHeight}px`);
+          root.style.setProperty('--app-offset-top', '0px');
+        }
+        if (window.scrollY !== 0) {
+          window.scrollTo(0, 0);
+        }
+      });
+    };
+
+    syncViewport();
+
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', syncViewport);
+    vv?.addEventListener('scroll', syncViewport);
+    window.addEventListener('resize', syncViewport);
+    window.addEventListener('orientationchange', syncViewport);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      vv?.removeEventListener('resize', syncViewport);
+      vv?.removeEventListener('scroll', syncViewport);
+      window.removeEventListener('resize', syncViewport);
+      window.removeEventListener('orientationchange', syncViewport);
+    };
+  }, []);
+
   const triggerCopy = useCallback(async (messageId: string, text: string) => {
     const ok = await copyTextToClipboard(text);
     if (!ok) return;
@@ -383,25 +421,27 @@ export default function App() {
   };
 
   return (
-    <div className="h-dvh w-full bg-[#F2F2F4] flex justify-center overflow-hidden">
-      <div className="w-full max-w-[960px] h-full bg-white flex flex-col sm:border-x border-[#E8E8EB]">
-        <header className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[64px] bg-white border-b border-[#EFEFF1] shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <CydiaStarMark />
-            <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
-              Cydia Translate
-            </h1>
-          </div>
+    <div className="fixed inset-x-0 top-[var(--app-offset-top)] h-[var(--app-vh)] w-full bg-[#F2F2F4] flex justify-center overflow-hidden">
+      <div className="w-full max-w-[960px] h-full bg-white flex flex-col sm:border-x border-[#E8E8EB] overflow-hidden">
+        <header className="bg-white border-b border-[#EFEFF1] pt-[env(safe-area-inset-top)] shrink-0 z-10">
+          <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[60px] sm:h-[64px]">
+            <div className="flex items-center gap-3 min-w-0">
+              <CydiaStarMark />
+              <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
+                Cydia Translate
+              </h1>
+            </div>
 
-          <button
-            type="button"
-            onClick={() => setShowThemeSettings(true)}
-            aria-label="Cài đặt"
-            title="Cài đặt"
-            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
-          >
-            <Settings className="w-5 h-5" strokeWidth={1.9} />
-          </button>
+            <button
+              type="button"
+              onClick={() => setShowThemeSettings(true)}
+              aria-label="Cài đặt"
+              title="Cài đặt"
+              className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
+            >
+              <Settings className="w-5 h-5" strokeWidth={1.9} />
+            </button>
+          </div>
         </header>
 
         <ChatPanel

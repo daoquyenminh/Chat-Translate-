@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 :root {
+  --app-vh: 100dvh;
+  --app-offset-top: 0px;
   --cydia-accent: #111111;
   --cydia-accent-text: #FFFFFF;
   --cydia-switch-knob: #FFFFFF;
@@ -15,6 +17,15 @@
 }
 
 @layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   body {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     -webkit-tap-highlight-color: transparent;
