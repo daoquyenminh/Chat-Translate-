@@ -354,6 +354,7 @@ async function tryExternalProvider(
     },
     body: JSON.stringify({
       model: targetModel,
+      stream: true,
       messages: [
         { role: 'system', content: systemInstruction },
         { role: 'user', content: contents },
@@ -362,15 +363,46 @@ async function tryExternalProvider(
     }),
   });
 
-  if (!res.ok) return null;
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const text = (data.choices?.[0]?.message?.content ?? '').trim();
-  if (!text) return null;
+  if (!res.ok || !res.body) return null;
 
-  async function* emptyRest(): AsyncGenerator<string, void, unknown> {}
-  return { firstChunk: text, rest: emptyRest(), modelUsed: targetModel };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuffer = '';
+
+  async function* sseTokens(): AsyncGenerator<string, void, unknown> {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() ?? '';
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const dataStr = line.slice(5).trim();
+        if (!dataStr || dataStr === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(dataStr) as {
+            choices?: Array<{ delta?: { content?: string } }>;
+          };
+          const piece = parsed.choices?.[0]?.delta?.content ?? '';
+          if (piece) yield piece;
+        } catch {
+          // Ignore partial SSE chunk
+        }
+      }
+    }
+  }
+
+  const gen = sseTokens();
+  let firstChunk = '';
+  while (!firstChunk) {
+    const step = await gen.next();
+    if (step.done) return null;
+    if (step.value) firstChunk = step.value;
+  }
+
+  return { firstChunk, rest: gen, modelUsed: targetModel };
 }
 
 export async function openTranslateStreamWithFallback(

@@ -49,6 +49,16 @@ async function startServer(): Promise<void> {
   const app = express();
   app.use(express.json({ limit: '512kb' }));
 
+  app.get('/api/ping', (_req: Request, res: Response) => {
+    try {
+      getGenAIClient();
+    } catch {
+      // Ignore if key not yet configured
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(204).end();
+  });
+
   app.post('/api/translate', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as TranslateRequestBody;
     const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
@@ -125,8 +135,16 @@ async function startServer(): Promise<void> {
 
   if (isProd) {
     const distDir = path.join(__dirname, 'dist');
+    app.use(
+      '/assets',
+      express.static(path.join(distDir, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+      })
+    );
     app.use(express.static(distDir));
     app.get('*', (_req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {

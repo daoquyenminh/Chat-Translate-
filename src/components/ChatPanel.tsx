@@ -1,5 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Check, ChevronDown, Languages, Loader2, RotateCcw, Square } from 'lucide-react';
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ClipboardPaste,
+  Languages,
+  Loader2,
+  RotateCcw,
+  Square,
+} from 'lucide-react';
 import { ChatMessage, MODEL_OPTIONS, TranslateModelId } from '../types';
 import { formatDateGroup, formatTime } from '../utils/formatters';
 
@@ -18,7 +27,7 @@ interface ChatPanelProps {
   onTranslateToVi: (messageId: string) => void;
 }
 
-export function ChatPanel({
+export const ChatPanel = React.memo(function ChatPanel({
   messages,
   isLoading,
   streamingMessageId,
@@ -34,10 +43,12 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [pasteFeedback, setPasteFeedback] = useState<'pasted' | 'empty' | 'denied' | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const pasteTimerRef = useRef<number | null>(null);
 
   const activeModelOption =
     MODEL_OPTIONS.find((m) => m.id === selectedModel) ?? MODEL_OPTIONS[0];
@@ -56,8 +67,11 @@ export function ChatPanel({
   const lastMsgText = messages[messages.length - 1]?.text ?? '';
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, lastMsgText, isLoading]);
+    bottomRef.current?.scrollIntoView({
+      behavior: streamingMessageId ? 'auto' : 'smooth',
+      block: 'end',
+    });
+  }, [messages.length, lastMsgText, isLoading, streamingMessageId]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -75,6 +89,69 @@ export function ChatPanel({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
   }, [input]);
+
+  useEffect(() => {
+    return () => {
+      if (pasteTimerRef.current !== null) {
+        window.clearTimeout(pasteTimerRef.current);
+      }
+    };
+  }, []);
+
+  const flashPasteFeedback = (status: 'pasted' | 'empty' | 'denied', durationMs = 1500) => {
+    setPasteFeedback(status);
+    if (pasteTimerRef.current !== null) {
+      window.clearTimeout(pasteTimerRef.current);
+    }
+    pasteTimerRef.current = window.setTimeout(() => {
+      setPasteFeedback(null);
+      pasteTimerRef.current = null;
+    }, durationMs);
+  };
+
+  const handlePasteFromClipboard = async () => {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+      textareaRef.current?.focus();
+      flashPasteFeedback('denied', 2200);
+      return;
+    }
+
+    try {
+      const clipText = (await navigator.clipboard.readText()).trim();
+      if (!clipText) {
+        textareaRef.current?.focus();
+        flashPasteFeedback('empty', 1600);
+        return;
+      }
+
+      const el = textareaRef.current;
+      if (el && document.activeElement === el) {
+        const start = el.selectionStart ?? input.length;
+        const end = el.selectionEnd ?? input.length;
+        const nextVal = `${input.slice(0, start)}${clipText}${input.slice(end)}`;
+        setInput(nextVal);
+        const caretPos = start + clipText.length;
+        window.requestAnimationFrame(() => {
+          el.focus();
+          el.setSelectionRange(caretPos, caretPos);
+        });
+      } else {
+        const nextVal = input.trim().length > 0 ? `${input.trimEnd()} ${clipText}` : clipText;
+        setInput(nextVal);
+        window.requestAnimationFrame(() => {
+          if (el) {
+            el.focus();
+            el.setSelectionRange(nextVal.length, nextVal.length);
+          }
+        });
+      }
+
+      flashPasteFeedback('pasted', 1200);
+    } catch {
+      textareaRef.current?.focus();
+      flashPasteFeedback('denied', 2200);
+    }
+  };
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -276,12 +353,34 @@ export function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Minimal bottom composer with inline model selector & Send/Stop button */}
-      <div className="bg-white border-t border-[#EFEFF1] px-3 sm:px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
+      {/* Minimal bottom composer with paste button, inline model selector & Send/Stop button */}
+      <div className="bg-white border-t border-[#EFEFF1] px-3 sm:px-6 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
+        {(pasteFeedback === 'empty' || pasteFeedback === 'denied') && (
+          <div className="mb-1.5 px-3 text-[12px] text-[#71717A]">
+            {pasteFeedback === 'empty'
+              ? 'Clipboard hiện đang trống.'
+              : 'Trình duyệt chặn đọc clipboard — hãy chạm giữ ô nhập để dán.'}
+          </div>
+        )}
+
         <form
           onSubmit={handleSubmit}
-          className="relative flex items-end gap-1.5 bg-[#F4F4F5] rounded-[28px] pl-3.5 pr-1.5 py-1.5"
+          className="relative flex items-end gap-1 bg-[#F4F4F5] rounded-[28px] pl-1.5 pr-1.5 py-1.5"
         >
+          <button
+            type="button"
+            onClick={() => void handlePasteFromClipboard()}
+            aria-label="Dán từ clipboard"
+            title="Dán từ clipboard"
+            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-black/5 active:scale-95 transition-all shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
+          >
+            {pasteFeedback === 'pasted' ? (
+              <Check className="w-4 h-4 text-emerald-600" strokeWidth={2.3} />
+            ) : (
+              <ClipboardPaste className="w-[18px] h-[18px]" strokeWidth={1.9} />
+            )}
+          </button>
+
           <textarea
             ref={textareaRef}
             rows={1}
@@ -296,7 +395,7 @@ export function ChatPanel({
               }, 120);
             }}
             placeholder="Nhập tin nhắn..."
-            className="flex-1 min-w-0 bg-transparent resize-none py-2.5 text-[16px] sm:text-[15px] leading-[1.45] text-[#111111] placeholder:text-[#8E8E93] focus:outline-none max-h-36"
+            className="flex-1 min-w-0 bg-transparent resize-none py-2.5 pl-1 text-[16px] sm:text-[15px] leading-[1.45] text-[#111111] placeholder:text-[#8E8E93] focus:outline-none max-h-36"
           />
 
           {/* Model selector inside composer */}
@@ -385,4 +484,4 @@ export function ChatPanel({
       </div>
     </div>
   );
-}
+});

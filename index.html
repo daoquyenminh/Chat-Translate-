@@ -13,9 +13,40 @@
     <meta property="og:image" content="/assets/aistudio/Logo_robot_1x_435fc3c3.png" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preload" as="image" href="/assets/aistudio/Logo_robot_1x_435fc3c3.png" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('cydia_translate_theme_v1');
+          if (!raw) return;
+          var t = JSON.parse(raw);
+          var r = document.documentElement.style;
+          if (t && t.accentColor) r.setProperty('--cydia-accent', t.accentColor);
+          if (t && t.userBubbleColor) r.setProperty('--cydia-user-bg', t.userBubbleColor);
+          if (t && t.botBubbleColor) r.setProperty('--cydia-bot-bg', t.botBubbleColor);
+          if (t && t.chatBgColor) r.setProperty('--cydia-chat-bg', t.chatBgColor);
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body class="bg-[#FAFAFA] text-[#111111] antialiased selection:bg-[#111111] selection:text-white">
     <div id="root"></div>

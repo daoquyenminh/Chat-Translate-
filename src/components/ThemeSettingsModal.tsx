@@ -1,14 +1,17 @@
-import React, { useEffect } from 'react';
-import { RotateCcw, Trash2, X } from 'lucide-react';
-import { ChatTheme, TranslationMode } from '../types';
+import React, { useEffect, useState } from 'react';
+import { Bookmark, Check, RotateCcw, Trash2, X } from 'lucide-react';
+import { ChatTheme, ThemePreset, TranslationMode } from '../types';
 import { DEFAULT_THEME, THEME_PRESETS } from '../defaults';
 
 interface ThemeSettingsModalProps {
   isOpen: boolean;
   mode: TranslationMode;
   theme: ChatTheme;
+  savedThemes: ThemePreset[];
   onModeChange: (mode: TranslationMode) => void;
   onThemeChange: (theme: ChatTheme) => void;
+  onSaveCustomTheme: (name: string, theme: ChatTheme) => void;
+  onDeleteCustomTheme: (presetId: string) => void;
   onClearChat: () => void;
   onClose: () => void;
 }
@@ -49,11 +52,16 @@ export function ThemeSettingsModal({
   isOpen,
   mode,
   theme,
+  savedThemes,
   onModeChange,
   onThemeChange,
+  onSaveCustomTheme,
+  onDeleteCustomTheme,
   onClearChat,
   onClose,
 }: ThemeSettingsModalProps) {
+  const [justSaved, setJustSaved] = useState(false);
+
   useEffect(() => {
     if (!isOpen) return;
     const handleKey = (e: KeyboardEvent) => {
@@ -62,6 +70,12 @@ export function ThemeSettingsModal({
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!justSaved) return;
+    const timer = window.setTimeout(() => setJustSaved(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [justSaved]);
 
   if (!isOpen) return null;
 
@@ -201,9 +215,31 @@ export function ThemeSettingsModal({
 
           {/* Live mini preview */}
           <section className="space-y-2.5">
-            <span className="block text-[12px] font-semibold tracking-wider text-[#71717A] uppercase">
-              Màu sắc giao diện
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="block text-[12px] font-semibold tracking-wider text-[#71717A] uppercase">
+                Màu sắc giao diện
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onSaveCustomTheme(`Bộ màu ${savedThemes.length + 1}`, theme);
+                  setJustSaved(true);
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-[#E5E5EA] bg-white hover:bg-[#F4F4F5] text-[12px] font-medium text-[#111111] transition-colors cursor-pointer"
+              >
+                {justSaved ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={2.3} />
+                    <span>Đã lưu</span>
+                  </>
+                ) : (
+                  <>
+                    <Bookmark className="w-3.5 h-3.5" strokeWidth={1.9} />
+                    <span>Lưu bộ màu</span>
+                  </>
+                )}
+              </button>
+            </div>
 
             <div className="rounded-2xl border border-[#EAEAEA] p-4 space-y-2.5 bg-[var(--cydia-chat-bg)]">
               <div className="flex justify-end">
@@ -217,6 +253,46 @@ export function ThemeSettingsModal({
                 </div>
               </div>
             </div>
+
+            {/* Saved custom presets */}
+            {savedThemes.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <span className="block text-[11px] font-medium text-[#8E8E93]">
+                  Bộ màu đã lưu
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {savedThemes.map((preset) => {
+                    const active = isPresetActive(preset.theme);
+                    return (
+                      <div
+                        key={preset.id}
+                        className={`inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 rounded-xl border text-[12px] transition-all ${
+                          active
+                            ? 'border-[#111111] bg-[#F4F4F5] font-semibold text-[#111111]'
+                            : 'border-[#EAEAEA] bg-white hover:border-[#C8C8CE] text-[#52525B]'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onThemeChange(preset.theme)}
+                          className="inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <span className="truncate max-w-[100px]">{preset.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCustomTheme(preset.id)}
+                          aria-label={`Xóa ${preset.name}`}
+                          className="p-0.5 rounded-full text-[#8E8E93] hover:text-[#111111] hover:bg-black/5 transition-colors cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Presets */}
             <div className="grid grid-cols-3 gap-2 pt-1">
@@ -265,6 +341,7 @@ export function ThemeSettingsModal({
                     <input
                       type="color"
                       value={theme[field.key]}
+                      onInput={(e) => updateField(field.key, e.currentTarget.value)}
                       onChange={(e) => updateField(field.key, e.target.value)}
                       aria-label={field.label}
                       className="w-8 h-8 rounded-full border border-[#E5E5E7] bg-transparent cursor-pointer overflow-hidden p-0"
@@ -289,7 +366,10 @@ export function ThemeSettingsModal({
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              onThemeChange(theme);
+              onClose();
+            }}
             className="px-5 py-2 rounded-full bg-[var(--cydia-accent)] text-[var(--cydia-accent-text)] text-[13px] font-semibold hover:opacity-90 transition-opacity cursor-pointer"
           >
             Xong

@@ -156,16 +156,29 @@ function missingKeyResponse(env: CloudflareEnv): Response {
   );
 }
 
-function createClient(apiKey: string): GoogleGenAI {
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
+let cachedWorkerKey = '';
+let cachedWorkerClient: GoogleGenAI | null = null;
+
+function getOrCreateClient(apiKey: string): GoogleGenAI {
+  if (!cachedWorkerClient || cachedWorkerKey !== apiKey) {
+    cachedWorkerKey = apiKey;
+    cachedWorkerClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
       },
-    },
-  });
+    });
+  }
+  return cachedWorkerClient;
 }
+
+const EXTERNAL_MODEL_IDS = new Set([
+  'deepseek-chat',
+  'gpt-4o-mini',
+  'claude-3-5-haiku-latest',
+]);
 
 async function forwardToUsProxy(
   env: CloudflareEnv,
@@ -193,31 +206,48 @@ async function runGeminiTranslation(
   }
 
   try {
-    const ai = createClient(apiKey);
+    const ai = getOrCreateClient(apiKey);
     const preferredModel =
       typeof payload.model === 'string' && payload.model.trim()
         ? payload.model.trim()
         : typeof env.GEMINI_MODEL === 'string'
         ? env.GEMINI_MODEL
         : undefined;
-    const [deepseekApiKey, openaiApiKey, anthropicApiKey, openrouterApiKey] = await Promise.all([
-      resolveSingleSecret(env.DEEPSEEK_API_KEY),
-      resolveSingleSecret(env.OPENAI_API_KEY),
-      resolveSingleSecret(env.ANTHROPIC_API_KEY),
-      resolveSingleSecret(env.OPENROUTER_API_KEY),
-    ]);
+
+    let externalKeys:
+      | {
+          deepseekApiKey?: string;
+          openaiApiKey?: string;
+          anthropicApiKey?: string;
+          openrouterApiKey?: string;
+        }
+      | undefined;
+
+    if (preferredModel && EXTERNAL_MODEL_IDS.has(preferredModel)) {
+      const [providerKey, openrouterKey] = await Promise.all([
+        preferredModel === 'deepseek-chat'
+          ? resolveSingleSecret(env.DEEPSEEK_API_KEY)
+          : preferredModel === 'gpt-4o-mini'
+          ? resolveSingleSecret(env.OPENAI_API_KEY)
+          : resolveSingleSecret(env.ANTHROPIC_API_KEY),
+        resolveSingleSecret(env.OPENROUTER_API_KEY),
+      ]);
+      externalKeys = {
+        deepseekApiKey: preferredModel === 'deepseek-chat' ? providerKey || undefined : undefined,
+        openaiApiKey: preferredModel === 'gpt-4o-mini' ? providerKey || undefined : undefined,
+        anthropicApiKey:
+          preferredModel === 'claude-3-5-haiku-latest' ? providerKey || undefined : undefined,
+        openrouterApiKey: openrouterKey || undefined,
+      };
+    }
+
     const opened = await openTranslateStreamWithFallback(ai, {
       text: payload.text,
       mode: payload.mode,
       targetLang: payload.targetLang,
       regenerate: payload.regenerate,
       preferredModel,
-      externalKeys: {
-        deepseekApiKey: deepseekApiKey || undefined,
-        openaiApiKey: openaiApiKey || undefined,
-        anthropicApiKey: anthropicApiKey || undefined,
-        openrouterApiKey: openrouterApiKey || undefined,
-      },
+      externalKeys,
     });
 
     const encoder = new TextEncoder();
@@ -312,6 +342,12 @@ export class GeminiRegionProxy {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/api/ping') {
+      const apiKey = await resolveApiKey(this.env);
+      if (apiKey) getOrCreateClient(apiKey);
+      return new Response(null, { status: 204 });
+    }
     return handleTranslate(request as CloudflareRequest, this.env, false);
   }
 }
@@ -320,10 +356,37 @@ export default {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const url = new URL(request.url);
 
+    if (request.method === 'GET' && url.pathname === '/api/ping') {
+      const colo = ((request as CloudflareRequest).cf?.colo ?? '').toUpperCase();
+      if (colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
+        const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
+        const stub = env.GEMINI_PROXY.get(id, { locationHint: 'wnam' });
+        await stub.fetch(new Request('https://gemini-proxy.internal/api/ping'));
+      } else {
+        const apiKey = await resolveApiKey(env);
+        if (apiKey) getOrCreateClient(apiKey);
+      }
+      return new Response(null, {
+        status: 204,
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/translate') {
       return handleTranslate(request as CloudflareRequest, env, true);
     }
 
-    return env.ASSETS.fetch(request);
+    const assetResponse = await env.ASSETS.fetch(request);
+    if (assetResponse.ok && url.pathname.startsWith('/assets/')) {
+      const headers = new Headers(assetResponse.headers);
+      headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return new Response(assetResponse.body, {
+        status: assetResponse.status,
+        statusText: assetResponse.statusText,
+        headers,
+      });
+    }
+
+    return assetResponse;
   },
 };
