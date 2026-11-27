@@ -270,9 +270,9 @@ export const ChatPanel = React.memo(function ChatPanel({
                           {msg.viError ? (
                             <span className="text-red-600 text-[13px]">{msg.viError}</span>
                           ) : msg.viTranslation ? (
-                            <span className="opacity-80">{msg.viTranslation}</span>
+                            <span className="italic opacity-80">{msg.viTranslation}</span>
                           ) : (
-                            <span className="opacity-50 text-[13px]">Đang dịch sang tiếng Việt...</span>
+                            <span className="italic opacity-50 text-[13px]">Đang dịch sang tiếng Việt...</span>
                           )}
                         </div>
                       )}
