@@ -15,7 +15,12 @@ interface AssetsFetcher {
 
 interface CloudflareEnv {
   GEMINI_API_KEY?: string;
+  VITE_GEMINI_API_KEY?: string;
+  API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+  GEMINI_MODEL?: string;
   ASSETS: AssetsFetcher;
+  [key: string]: unknown;
 }
 
 interface TranslateBody {
@@ -39,6 +44,35 @@ function jsonResponse(payload: Record<string, unknown>, status = 200): Response 
   });
 }
 
+function resolveApiKey(env: CloudflareEnv): string {
+  const candidates = [
+    env.GEMINI_API_KEY,
+    env.VITE_GEMINI_API_KEY,
+    env.API_KEY,
+    env.GOOGLE_API_KEY,
+  ];
+  for (const val of candidates) {
+    if (typeof val === 'string' && val.trim().length > 0) {
+      return val.trim();
+    }
+  }
+  return '';
+}
+
+function missingKeyResponse(env: CloudflareEnv): Response {
+  const envKeys = Object.keys(env).filter((k) => k !== 'ASSETS');
+  const detail =
+    envKeys.length > 0
+      ? ` (đang có biến: ${envKeys.join(', ')})`
+      : ' (hiện chưa có biến runtime nào — lưu ý thêm ở mục Variables and Secrets, không phải Build variables)';
+  return jsonResponse(
+    {
+      error: `Chưa tìm thấy GEMINI_API_KEY trên Cloudflare Worker${detail}.`,
+    },
+    500
+  );
+}
+
 function createClient(apiKey: string): GoogleGenAI {
   return new GoogleGenAI({
     apiKey,
@@ -52,36 +86,45 @@ function createClient(apiKey: string): GoogleGenAI {
 
 function mapGeminiError(err: unknown, fallbackMessage: string): Response {
   const errorObj = err as { status?: number; message?: string };
+  const status = errorObj?.status;
   const msg = errorObj?.message ?? '';
 
   if (
-    errorObj?.status === 403 ||
-    errorObj?.status === 400 ||
+    status === 403 ||
     msg.includes('API_KEY_INVALID') ||
     msg.includes('PERMISSION_DENIED')
   ) {
     return jsonResponse(
-      { error: 'GEMINI_API_KEY không hợp lệ hoặc thiếu quyền. Kiểm tra lại trong Cloudflare Settings > Variables and Secrets.' },
+      {
+        error:
+          'GEMINI_API_KEY không hợp lệ hoặc bị từ chối (403). Kiểm tra lại key trong Cloudflare Settings > Variables and Secrets.',
+      },
       403
     );
   }
 
-  if (errorObj?.status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
+  if (status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
     return jsonResponse(
-      { error: 'Đang vượt giới hạn lượt gọi tạm thời. Thử lại sau vài giây nhé.' },
+      { error: 'Đang vượt giới hạn lượt gọi tạm thời (429). Thử lại sau vài giây nhé.' },
       429
     );
   }
 
-  return jsonResponse({ error: fallbackMessage }, 502);
+  if (status === 404 || msg.includes('NOT_FOUND')) {
+    return jsonResponse(
+      { error: `Model không khả dụng với API key hiện tại (404).` },
+      404
+    );
+  }
+
+  const suffix = status ? ` (${status})` : '';
+  return jsonResponse({ error: `${fallbackMessage}${suffix}` }, 502);
 }
 
 async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Response> {
-  if (!env.GEMINI_API_KEY) {
-    return jsonResponse(
-      { error: 'Chưa cấu hình GEMINI_API_KEY trong Cloudflare Workers > Settings > Variables and Secrets.' },
-      500
-    );
+  const apiKey = resolveApiKey(env);
+  if (!apiKey) {
+    return missingKeyResponse(env);
   }
 
   let body: TranslateBody;
@@ -103,12 +146,16 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
   }
 
   try {
-    const ai = createClient(env.GEMINI_API_KEY);
+    const ai = createClient(apiKey);
+    const modelName =
+      typeof env.GEMINI_MODEL === 'string' && env.GEMINI_MODEL.trim()
+        ? env.GEMINI_MODEL.trim()
+        : TRANSLATE_MODEL;
     const systemInstruction = mode === 'formal' ? FORMAL_SYSTEM_INSTRUCTION : CHAT_SYSTEM_INSTRUCTION;
     const contents = buildTranslatePrompt(rawText, body.regenerate);
 
     const streamResult = await ai.models.generateContentStream({
-      model: TRANSLATE_MODEL,
+      model: modelName,
       contents,
       config: {
         systemInstruction,
@@ -149,11 +196,9 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
 }
 
 async function handleTranscribe(request: Request, env: CloudflareEnv): Promise<Response> {
-  if (!env.GEMINI_API_KEY) {
-    return jsonResponse(
-      { error: 'Chưa cấu hình GEMINI_API_KEY trong Cloudflare Workers > Settings > Variables and Secrets.' },
-      500
-    );
+  const apiKey = resolveApiKey(env);
+  if (!apiKey) {
+    return missingKeyResponse(env);
   }
 
   let body: TranscribeBody;
@@ -172,7 +217,7 @@ async function handleTranscribe(request: Request, env: CloudflareEnv): Promise<R
   }
 
   try {
-    const ai = createClient(env.GEMINI_API_KEY);
+    const ai = createClient(apiKey);
     const response = await ai.models.generateContent({
       model: TRANSCRIBE_MODEL,
       contents: {
