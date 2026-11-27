@@ -16,20 +16,47 @@ export interface ModelCandidate {
 
 export const FALLBACK_TRANSLATE_MODEL = 'gemini-4-hydrogen';
 
+export interface ExternalProviderKeys {
+  deepseekApiKey?: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  openrouterApiKey?: string;
+}
+
 export function buildModelCandidates(preferredModel?: string): ModelCandidate[] {
-  const candidates: ModelCandidate[] = [];
   const custom = preferredModel?.trim();
 
-  if (custom && custom !== TRANSLATE_MODEL && custom !== FALLBACK_TRANSLATE_MODEL) {
-    candidates.push({ model: custom });
+  if (custom === FALLBACK_TRANSLATE_MODEL) {
+    return [
+      { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
+      { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
+    ];
   }
 
-  candidates.push(
-    { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
-    { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW }
-  );
+  if (custom === TRANSLATE_MODEL || !custom) {
+    return [
+      { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
+      { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
+    ];
+  }
 
-  return candidates;
+  // If user chose DeepSeek / GPT / Claude without external key, prioritize Gemini 4 Flash then Flash Lite
+  if (
+    custom === 'deepseek-chat' ||
+    custom === 'gpt-4o-mini' ||
+    custom === 'claude-3-5-haiku-latest'
+  ) {
+    return [
+      { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
+      { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
+    ];
+  }
+
+  return [
+    { model: custom },
+    { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
+    { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
+  ];
 }
 
 export function sanitizeInputText(raw: string): string {
@@ -248,6 +275,104 @@ async function openSingleCandidate(
   };
 }
 
+async function tryExternalProvider(
+  modelId: string,
+  contents: string,
+  systemInstruction: string,
+  keys?: ExternalProviderKeys
+): Promise<OpenedTranslateStream | null> {
+  if (!keys) return null;
+
+  let endpoint = '';
+  let apiKey = '';
+  let targetModel = modelId;
+  let isAnthropic = false;
+
+  if (modelId === 'deepseek-chat') {
+    if (keys.deepseekApiKey) {
+      endpoint = 'https://api.deepseek.com/chat/completions';
+      apiKey = keys.deepseekApiKey;
+      targetModel = 'deepseek-chat';
+    } else if (keys.openrouterApiKey) {
+      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+      apiKey = keys.openrouterApiKey;
+      targetModel = 'deepseek/deepseek-chat';
+    }
+  } else if (modelId === 'gpt-4o-mini') {
+    if (keys.openaiApiKey) {
+      endpoint = 'https://api.openai.com/v1/chat/completions';
+      apiKey = keys.openaiApiKey;
+      targetModel = 'gpt-4o-mini';
+    } else if (keys.openrouterApiKey) {
+      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+      apiKey = keys.openrouterApiKey;
+      targetModel = 'openai/gpt-4o-mini';
+    }
+  } else if (modelId === 'claude-3-5-haiku-latest') {
+    if (keys.anthropicApiKey) {
+      endpoint = 'https://api.anthropic.com/v1/messages';
+      apiKey = keys.anthropicApiKey;
+      targetModel = 'claude-3-5-haiku-latest';
+      isAnthropic = true;
+    } else if (keys.openrouterApiKey) {
+      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+      apiKey = keys.openrouterApiKey;
+      targetModel = 'anthropic/claude-3.5-haiku';
+    }
+  }
+
+  if (!endpoint || !apiKey) return null;
+
+  if (isAnthropic) {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: targetModel,
+        max_tokens: 1024,
+        system: systemInstruction,
+        messages: [{ role: 'user', content: contents }],
+      }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { content?: Array<{ text?: string }> };
+    const text = (data.content?.[0]?.text ?? '').trim();
+    if (!text) return null;
+    async function* emptyRest(): AsyncGenerator<string, void, unknown> {}
+    return { firstChunk: text, rest: emptyRest(), modelUsed: targetModel };
+  }
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: targetModel,
+      messages: [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: contents },
+      ],
+      temperature: 0.2,
+    }),
+  });
+
+  if (!res.ok) return null;
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = (data.choices?.[0]?.message?.content ?? '').trim();
+  if (!text) return null;
+
+  async function* emptyRest(): AsyncGenerator<string, void, unknown> {}
+  return { firstChunk: text, rest: emptyRest(), modelUsed: targetModel };
+}
+
 export async function openTranslateStreamWithFallback(
   ai: GoogleGenAI,
   options: {
@@ -256,6 +381,7 @@ export async function openTranslateStreamWithFallback(
     targetLang?: TargetLanguage;
     regenerate?: boolean;
     preferredModel?: string;
+    externalKeys?: ExternalProviderKeys;
   }
 ): Promise<OpenedTranslateStream> {
   const systemInstruction =
@@ -268,6 +394,28 @@ export async function openTranslateStreamWithFallback(
     options.targetLang === 'vi'
       ? options.text
       : buildTranslatePrompt(options.text, options.regenerate);
+
+  const customModel = options.preferredModel?.trim();
+  if (
+    customModel === 'deepseek-chat' ||
+    customModel === 'gpt-4o-mini' ||
+    customModel === 'claude-3-5-haiku-latest'
+  ) {
+    try {
+      const externalResult = await tryExternalProvider(
+        customModel,
+        contents,
+        systemInstruction,
+        options.externalKeys
+      );
+      if (externalResult) {
+        return externalResult;
+      }
+    } catch {
+      // Fallback to Gemini candidates below
+    }
+  }
+
   const candidates = buildModelCandidates(options.preferredModel);
 
   let lastError: unknown = null;

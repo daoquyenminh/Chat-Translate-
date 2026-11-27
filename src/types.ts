@@ -1,4 +1,12 @@
-export type TranslationMode = 'chat' | 'formal';
+import {
+  MODEL_OPTIONS,
+  ModelOption,
+  TranslateModelId,
+  TranslationMode,
+} from '../shared/prompts';
+
+export { MODEL_OPTIONS };
+export type { ModelOption, TranslateModelId, TranslationMode };
 
 export interface ChatMessage {
   id: string;
@@ -6,6 +14,7 @@ export interface ChatMessage {
   text: string;
   createdAt: string;
   mode?: TranslationMode;
+  model?: TranslateModelId;
   sourceText?: string;
   isError?: boolean;
   viTranslation?: string;

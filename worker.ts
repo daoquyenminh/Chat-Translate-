@@ -38,6 +38,10 @@ interface CloudflareEnv {
   VITE_GEMINI_API_KEY?: SecretOrString;
   API_KEY?: SecretOrString;
   GOOGLE_API_KEY?: SecretOrString;
+  DEEPSEEK_API_KEY?: SecretOrString;
+  OPENAI_API_KEY?: SecretOrString;
+  ANTHROPIC_API_KEY?: SecretOrString;
+  OPENROUTER_API_KEY?: SecretOrString;
   GEMINI_MODEL?: string;
   GEMINI_PROXY?: DurableObjectNamespaceLike;
   ASSETS: AssetsFetcher;
@@ -48,6 +52,7 @@ interface TranslateBody {
   text?: string;
   mode?: TranslationMode;
   targetLang?: TargetLanguage;
+  model?: string;
   regenerate?: boolean;
 }
 
@@ -55,6 +60,7 @@ interface NormalizedTranslatePayload {
   text: string;
   mode: TranslationMode;
   targetLang: TargetLanguage;
+  model?: string;
   regenerate?: boolean;
 }
 
@@ -105,6 +111,23 @@ function jsonResponse(
   });
 }
 
+async function resolveSingleSecret(val?: SecretOrString): Promise<string> {
+  if (typeof val === 'string' && val.trim().length > 0) {
+    return val.trim();
+  }
+  if (val && typeof val === 'object' && 'get' in val && typeof (val as SecretStoreBinding).get === 'function') {
+    try {
+      const resolved = await (val as SecretStoreBinding).get();
+      if (typeof resolved === 'string' && resolved.trim().length > 0) {
+        return resolved.trim();
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return '';
+}
+
 async function resolveApiKey(env: CloudflareEnv): Promise<string> {
   const candidates = [
     env.GEMINI_API_KEY,
@@ -113,19 +136,8 @@ async function resolveApiKey(env: CloudflareEnv): Promise<string> {
     env.GOOGLE_API_KEY,
   ];
   for (const val of candidates) {
-    if (typeof val === 'string' && val.trim().length > 0) {
-      return val.trim();
-    }
-    if (val && typeof val === 'object' && 'get' in val && typeof (val as SecretStoreBinding).get === 'function') {
-      try {
-        const resolved = await (val as SecretStoreBinding).get();
-        if (typeof resolved === 'string' && resolved.trim().length > 0) {
-          return resolved.trim();
-        }
-      } catch {
-        // Ignore and check next candidate
-      }
-    }
+    const resolved = await resolveSingleSecret(val);
+    if (resolved) return resolved;
   }
   return '';
 }
@@ -182,13 +194,30 @@ async function runGeminiTranslation(
 
   try {
     const ai = createClient(apiKey);
-    const preferredModel = typeof env.GEMINI_MODEL === 'string' ? env.GEMINI_MODEL : undefined;
+    const preferredModel =
+      typeof payload.model === 'string' && payload.model.trim()
+        ? payload.model.trim()
+        : typeof env.GEMINI_MODEL === 'string'
+        ? env.GEMINI_MODEL
+        : undefined;
+    const [deepseekApiKey, openaiApiKey, anthropicApiKey, openrouterApiKey] = await Promise.all([
+      resolveSingleSecret(env.DEEPSEEK_API_KEY),
+      resolveSingleSecret(env.OPENAI_API_KEY),
+      resolveSingleSecret(env.ANTHROPIC_API_KEY),
+      resolveSingleSecret(env.OPENROUTER_API_KEY),
+    ]);
     const opened = await openTranslateStreamWithFallback(ai, {
       text: payload.text,
       mode: payload.mode,
       targetLang: payload.targetLang,
       regenerate: payload.regenerate,
       preferredModel,
+      externalKeys: {
+        deepseekApiKey: deepseekApiKey || undefined,
+        openaiApiKey: openaiApiKey || undefined,
+        anthropicApiKey: anthropicApiKey || undefined,
+        openrouterApiKey: openrouterApiKey || undefined,
+      },
     });
 
     const encoder = new TextEncoder();
@@ -260,6 +289,7 @@ async function handleTranslate(
     text: rawText,
     mode,
     targetLang,
+    model: typeof body.model === 'string' ? body.model.trim() : undefined,
     regenerate: body.regenerate,
   };
   const colo = (request.cf?.colo ?? '').toUpperCase();

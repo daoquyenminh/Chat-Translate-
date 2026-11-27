@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Settings } from 'lucide-react';
-import { ChatMessage, ChatTheme, TranslationMode } from './types';
+import { ChatMessage, ChatTheme, TranslateModelId, TranslationMode } from './types';
 import { DEFAULT_THEME, INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
@@ -21,6 +21,10 @@ function CydiaStarMark() {
 
 export default function App() {
   const [mode, setMode] = useLocalStorage<TranslationMode>('cydia_translate_mode_v2', 'chat');
+  const [selectedModel, setSelectedModel] = useLocalStorage<TranslateModelId>(
+    'cydia_translate_model_v1',
+    'gemini-3.1-flash-lite'
+  );
   const [theme, setTheme] = useLocalStorage<ChatTheme>('cydia_translate_theme_v1', DEFAULT_THEME);
   const [messages, setMessages] = useLocalStorage<ChatMessage[]>(
     'cydia_translate_messages_v2',
@@ -34,6 +38,7 @@ export default function App() {
   const [showThemeSettings, setShowThemeSettings] = useState(false);
 
   const copyTimerRef = useRef<number | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const visibleMessages = useMemo(
     () => messages.filter((m) => m.id !== 'welcome-msg'),
@@ -109,20 +114,39 @@ export default function App() {
     };
   }, []);
 
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setMessages((curr) =>
+      curr.filter((m) => !(m.role === 'assistant' && m.text.trim() === ''))
+    );
+    setStreamingMessageId(null);
+    setIsLoading(false);
+  }, [setMessages]);
+
   const streamTranslation = useCallback(
     async (
       text: string,
       targetMode: TranslationMode,
+      targetModel: TranslateModelId,
       messageId: string,
-      regenerate: boolean
-    ): Promise<{ ok: true; translation: string } | { ok: false; error: string }> => {
+      regenerate: boolean,
+      signal: AbortSignal
+    ): Promise<
+      | { ok: true; translation: string }
+      | { ok: false; error: string; aborted?: boolean }
+    > => {
       const fetchOnce = () =>
         fetch('/api/translate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal,
           body: JSON.stringify({
             text,
             mode: targetMode,
+            model: targetModel,
             regenerate,
           }),
         });
@@ -131,6 +155,8 @@ export default function App() {
         const contentType = (response.headers.get('content-type') || '').toLowerCase();
         return contentType.includes('text/html') || response.headers.get('x-cydia-translate') !== '1';
       };
+
+      let accumulated = '';
 
       try {
         let res = await fetchOnce();
@@ -182,7 +208,6 @@ export default function App() {
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let accumulated = '';
 
         while (true) {
           const { done, value } = await reader.read();
@@ -217,7 +242,14 @@ export default function App() {
           curr.map((m) => (m.id === messageId ? { ...m, text: cleanFinal } : m))
         );
         return { ok: true, translation: cleanFinal };
-      } catch {
+      } catch (err: unknown) {
+        if (signal.aborted || (err as { name?: string })?.name === 'AbortError') {
+          const partial = accumulated.trim();
+          if (partial) {
+            return { ok: true, translation: partial };
+          }
+          return { ok: false, error: '', aborted: true };
+        }
         return {
           ok: false,
           error: 'Mất kết nối máy chủ. Kiểm tra mạng rồi thử lại nhé.',
@@ -231,6 +263,7 @@ export default function App() {
     async (text: string) => {
       const nowIso = new Date().toISOString();
       const activeMode = mode;
+      const activeModel = selectedModel;
       const userMsg: ChatMessage = {
         id: `u-${Date.now()}`,
         role: 'user',
@@ -244,14 +277,28 @@ export default function App() {
         text: '',
         createdAt: nowIso,
         mode: activeMode,
+        model: activeModel,
         sourceText: text,
       };
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
       setMessages((curr) => [...curr.filter((m) => m.id !== 'welcome-msg'), userMsg, placeholderMsg]);
       setIsLoading(true);
       setStreamingMessageId(assistantId);
 
-      const result = await streamTranslation(text, activeMode, assistantId, false);
+      const result = await streamTranslation(
+        text,
+        activeMode,
+        activeModel,
+        assistantId,
+        false,
+        controller.signal
+      );
       const finishIso = new Date().toISOString();
 
       if (result.ok) {
@@ -263,6 +310,8 @@ export default function App() {
           )
         );
         void triggerCopy(assistantId, result.translation);
+      } else if (result.aborted) {
+        setMessages((curr) => curr.filter((m) => m.id !== assistantId));
       } else {
         setMessages((curr) =>
           curr.map((m) =>
@@ -273,30 +322,47 @@ export default function App() {
         );
       }
 
-      setStreamingMessageId(null);
-      setIsLoading(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setStreamingMessageId(null);
+        setIsLoading(false);
+      }
     },
-    [mode, setMessages, streamTranslation, triggerCopy]
+    [mode, selectedModel, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleRegenerate = useCallback(
     async (messageId: string, sourceText: string) => {
       if (isLoading) return;
       const activeMode = mode;
+      const activeModel = selectedModel;
       const existing = messages.find((m) => m.id === messageId);
       const isRetryFromError = Boolean(existing?.isError);
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
       setMessages((curr) =>
         curr.map((m) =>
           m.id === messageId
-            ? { ...m, text: '', mode: activeMode, isError: false }
+            ? { ...m, text: '', mode: activeMode, model: activeModel, isError: false }
             : m
         )
       );
       setIsLoading(true);
       setStreamingMessageId(messageId);
 
-      const result = await streamTranslation(sourceText, activeMode, messageId, !isRetryFromError);
+      const result = await streamTranslation(
+        sourceText,
+        activeMode,
+        activeModel,
+        messageId,
+        !isRetryFromError,
+        controller.signal
+      );
       const finishIso = new Date().toISOString();
 
       if (result.ok) {
@@ -307,6 +373,7 @@ export default function App() {
                   ...m,
                   text: result.translation,
                   mode: activeMode,
+                  model: activeModel,
                   createdAt: finishIso,
                   isError: false,
                 }
@@ -314,6 +381,8 @@ export default function App() {
           )
         );
         void triggerCopy(messageId, result.translation);
+      } else if (result.aborted) {
+        setMessages((curr) => curr.filter((m) => m.id !== messageId));
       } else {
         setMessages((curr) =>
           curr.map((m) =>
@@ -324,10 +393,13 @@ export default function App() {
         );
       }
 
-      setStreamingMessageId(null);
-      setIsLoading(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setStreamingMessageId(null);
+        setIsLoading(false);
+      }
     },
-    [isLoading, messages, mode, setMessages, streamTranslation, triggerCopy]
+    [isLoading, messages, mode, selectedModel, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleTranslateToVi = useCallback(
@@ -450,8 +522,11 @@ export default function App() {
           streamingMessageId={streamingMessageId}
           translatingViId={translatingViId}
           copiedMessageId={copiedMessageId}
+          selectedModel={selectedModel}
+          onModelChange={setSelectedModel}
           onCopyMessage={triggerCopy}
           onSend={handleSend}
+          onStop={handleStop}
           onRegenerate={handleRegenerate}
           onTranslateToVi={handleTranslateToVi}
         />

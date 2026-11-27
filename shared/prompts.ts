@@ -1,7 +1,60 @@
 export type TranslationMode = 'chat' | 'formal';
 export type TargetLanguage = 'en' | 'vi';
 
-export const TRANSLATE_MODEL = 'gemini-3.1-flash-lite';
+export type TranslateModelId =
+  | 'gemini-3.1-flash-lite'
+  | 'gemini-4-hydrogen'
+  | 'deepseek-chat'
+  | 'gpt-4o-mini'
+  | 'claude-3-5-haiku-latest';
+
+export interface ModelOption {
+  id: TranslateModelId;
+  label: string;
+  shortLabel: string;
+  badge: string;
+  provider: 'gemini' | 'deepseek' | 'openai' | 'anthropic';
+}
+
+export const MODEL_OPTIONS: ModelOption[] = [
+  {
+    id: 'gemini-3.1-flash-lite',
+    label: 'Gemini 3.1 Flash Lite',
+    shortLabel: 'Flash Lite',
+    badge: 'Free · Siêu nhanh',
+    provider: 'gemini',
+  },
+  {
+    id: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Flash',
+    shortLabel: 'Gemini 4',
+    badge: 'Free · Tự nhiên',
+    provider: 'gemini',
+  },
+  {
+    id: 'deepseek-chat',
+    label: 'DeepSeek V3',
+    shortLabel: 'DeepSeek',
+    badge: 'API / OpenRouter',
+    provider: 'deepseek',
+  },
+  {
+    id: 'gpt-4o-mini',
+    label: 'ChatGPT (GPT-4o mini)',
+    shortLabel: 'GPT-4o',
+    badge: 'OpenAI / OpenRouter',
+    provider: 'openai',
+  },
+  {
+    id: 'claude-3-5-haiku-latest',
+    label: 'Claude 3.5 Haiku',
+    shortLabel: 'Claude',
+    badge: 'Anthropic / OpenRouter',
+    provider: 'anthropic',
+  },
+];
+
+export const TRANSLATE_MODEL: TranslateModelId = 'gemini-3.1-flash-lite';
 
 export const CHAT_SYSTEM_INSTRUCTION = `You are a fast plain-text English translator and grammar corrector.
 STRICT RULES:
