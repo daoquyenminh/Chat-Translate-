@@ -29,6 +29,7 @@ export default function App() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [translatingViId, setTranslatingViId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [showThemeSettings, setShowThemeSettings] = useState(false);
 
@@ -291,6 +292,92 @@ export default function App() {
     [isLoading, messages, mode, setMessages, streamTranslation, triggerCopy]
   );
 
+  const handleTranslateToVi = useCallback(
+    async (messageId: string) => {
+      if (isLoading || translatingViId !== null) return;
+      const target = messages.find((m) => m.id === messageId);
+      if (!target || target.isError || !target.text.trim()) return;
+
+      if (target.viTranslation && !target.viError) {
+        setMessages((curr) =>
+          curr.map((m) =>
+            m.id === messageId ? { ...m, showViTranslation: !m.showViTranslation } : m
+          )
+        );
+        return;
+      }
+
+      setTranslatingViId(messageId);
+      setMessages((curr) =>
+        curr.map((m) =>
+          m.id === messageId
+            ? { ...m, showViTranslation: true, viTranslation: '', viError: undefined }
+            : m
+        )
+      );
+
+      try {
+        const res = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: target.text,
+            mode: target.mode ?? mode,
+            targetLang: 'vi',
+          }),
+        });
+
+        if (!res.ok) {
+          let errMsg = 'Không thể dịch sang tiếng Việt lúc này.';
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('application/json')) {
+            try {
+              const errJson = (await res.json()) as { error?: string };
+              if (errJson.error) errMsg = errJson.error;
+            } catch {
+              // Keep default message
+            }
+          }
+          setMessages((curr) =>
+            curr.map((m) => (m.id === messageId ? { ...m, viError: errMsg } : m))
+          );
+          return;
+        }
+
+        const viText = (await res.text()).trim();
+        if (!viText || /^<!doctype\s+html|^<html[\s>]/i.test(viText)) {
+          setMessages((curr) =>
+            curr.map((m) =>
+              m.id === messageId
+                ? { ...m, viError: 'Không nhận được bản dịch tiếng Việt.' }
+                : m
+            )
+          );
+          return;
+        }
+
+        setMessages((curr) =>
+          curr.map((m) =>
+            m.id === messageId
+              ? { ...m, viTranslation: viText, viError: undefined, showViTranslation: true }
+              : m
+          )
+        );
+      } catch {
+        setMessages((curr) =>
+          curr.map((m) =>
+            m.id === messageId
+              ? { ...m, viError: 'Mất kết nối máy chủ. Thử lại nhé.' }
+              : m
+          )
+        );
+      } finally {
+        setTranslatingViId(null);
+      }
+    },
+    [isLoading, messages, mode, setMessages, translatingViId]
+  );
+
   const handleClearChat = () => {
     setMessages([]);
   };
@@ -321,10 +408,12 @@ export default function App() {
           messages={visibleMessages}
           isLoading={isLoading}
           streamingMessageId={streamingMessageId}
+          translatingViId={translatingViId}
           copiedMessageId={copiedMessageId}
           onCopyMessage={triggerCopy}
           onSend={handleSend}
           onRegenerate={handleRegenerate}
+          onTranslateToVi={handleTranslateToVi}
         />
       </div>
 

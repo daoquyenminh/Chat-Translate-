@@ -4,11 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
-import { TranslationMode } from './shared/prompts';
+import { TargetLanguage, TranslationMode } from './shared/prompts';
 import {
   formatGeminiUserError,
   inspectGeminiError,
   openTranslateStreamWithFallback,
+  sanitizeInputText,
 } from './shared/translateStream';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,6 +20,7 @@ const PORT = Number(process.env.PORT || 3000);
 interface TranslateRequestBody {
   text?: string;
   mode?: TranslationMode;
+  targetLang?: TargetLanguage;
   regenerate?: boolean;
 }
 
@@ -48,8 +50,9 @@ async function startServer(): Promise<void> {
 
   app.post('/api/translate', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as TranslateRequestBody;
-    const rawText = typeof body.text === 'string' ? body.text.trim() : '';
+    const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
     const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+    const targetLang: TargetLanguage = body.targetLang === 'vi' ? 'vi' : 'en';
 
     if (!rawText) {
       res.status(400).json({ error: 'Vui lòng nhập nội dung cần dịch.' });
@@ -66,6 +69,7 @@ async function startServer(): Promise<void> {
       const opened = await openTranslateStreamWithFallback(ai, {
         text: rawText,
         mode,
+        targetLang,
         regenerate: body.regenerate,
       });
 

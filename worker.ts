@@ -1,9 +1,10 @@
 import { GoogleGenAI } from '@google/genai';
-import { TranslationMode } from './shared/prompts';
+import { TargetLanguage, TranslationMode } from './shared/prompts';
 import {
   formatGeminiUserError,
   inspectGeminiError,
   openTranslateStreamWithFallback,
+  sanitizeInputText,
 } from './shared/translateStream';
 
 interface AssetsFetcher {
@@ -16,12 +17,29 @@ interface SecretStoreBinding {
 
 type SecretOrString = string | SecretStoreBinding;
 
+interface DurableObjectStubLike {
+  fetch(request: Request): Promise<Response>;
+}
+
+interface DurableObjectNamespaceLike {
+  idFromName(name: string): unknown;
+  get(id: unknown, options?: { locationHint?: string }): DurableObjectStubLike;
+}
+
+interface CloudflareRequest extends Request {
+  cf?: {
+    colo?: string;
+    country?: string;
+  };
+}
+
 interface CloudflareEnv {
   GEMINI_API_KEY?: SecretOrString;
   VITE_GEMINI_API_KEY?: SecretOrString;
   API_KEY?: SecretOrString;
   GOOGLE_API_KEY?: SecretOrString;
   GEMINI_MODEL?: string;
+  GEMINI_PROXY?: DurableObjectNamespaceLike;
   ASSETS: AssetsFetcher;
   [key: string]: unknown;
 }
@@ -29,8 +47,48 @@ interface CloudflareEnv {
 interface TranslateBody {
   text?: string;
   mode?: TranslationMode;
+  targetLang?: TargetLanguage;
   regenerate?: boolean;
 }
+
+interface NormalizedTranslatePayload {
+  text: string;
+  mode: TranslationMode;
+  targetLang: TargetLanguage;
+  regenerate?: boolean;
+}
+
+// Cloudflare edge PoPs where Google Gemini API returns HTTP 400 (User location is not supported)
+const RESTRICTED_COLOS = new Set([
+  'HKG',
+  'MFM',
+  'PEK',
+  'PVG',
+  'SHA',
+  'CAN',
+  'SZX',
+  'CTU',
+  'CKG',
+  'DLC',
+  'FOC',
+  'HGH',
+  'HFE',
+  'KMG',
+  'NKG',
+  'NNG',
+  'TAO',
+  'TSN',
+  'WUH',
+  'XIY',
+  'XMN',
+  'CGO',
+  'CSX',
+  'DME',
+  'LED',
+  'KJA',
+  'SVX',
+  'MSQ',
+]);
 
 function jsonResponse(
   payload: Record<string, unknown>,
@@ -73,7 +131,7 @@ async function resolveApiKey(env: CloudflareEnv): Promise<string> {
 }
 
 function missingKeyResponse(env: CloudflareEnv): Response {
-  const envKeys = Object.keys(env).filter((k) => k !== 'ASSETS');
+  const envKeys = Object.keys(env).filter((k) => k !== 'ASSETS' && k !== 'GEMINI_PROXY');
   const detail =
     envKeys.length > 0
       ? ` (đang có biến: ${envKeys.join(', ')})`
@@ -97,37 +155,39 @@ function createClient(apiKey: string): GoogleGenAI {
   });
 }
 
-async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Response> {
+async function forwardToUsProxy(
+  env: CloudflareEnv,
+  payload: NormalizedTranslatePayload
+): Promise<Response | null> {
+  if (!env.GEMINI_PROXY) return null;
+  const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
+  const stub = env.GEMINI_PROXY.get(id, { locationHint: 'wnam' });
+  const proxyReq = new Request('https://gemini-proxy.internal/api/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return stub.fetch(proxyReq);
+}
+
+async function runGeminiTranslation(
+  payload: NormalizedTranslatePayload,
+  env: CloudflareEnv,
+  allowProxyFallback: boolean
+): Promise<Response> {
   const apiKey = await resolveApiKey(env);
   if (!apiKey) {
     return missingKeyResponse(env);
-  }
-
-  let body: TranslateBody;
-  try {
-    body = (await request.json()) as TranslateBody;
-  } catch {
-    return jsonResponse({ error: 'Dữ liệu gửi lên không hợp lệ.' }, 400);
-  }
-
-  const rawText = typeof body.text === 'string' ? body.text.trim() : '';
-  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
-
-  if (!rawText) {
-    return jsonResponse({ error: 'Vui lòng nhập nội dung cần dịch.' }, 400);
-  }
-
-  if (rawText.length > 8000) {
-    return jsonResponse({ error: 'Đoạn văn bản quá dài (tối đa 8.000 ký tự).' }, 400);
   }
 
   try {
     const ai = createClient(apiKey);
     const preferredModel = typeof env.GEMINI_MODEL === 'string' ? env.GEMINI_MODEL : undefined;
     const opened = await openTranslateStreamWithFallback(ai, {
-      text: rawText,
-      mode,
-      regenerate: body.regenerate,
+      text: payload.text,
+      mode: payload.mode,
+      targetLang: payload.targetLang,
+      regenerate: payload.regenerate,
       preferredModel,
     });
 
@@ -156,6 +216,14 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
     });
   } catch (err) {
     const info = inspectGeminiError(err);
+
+    if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
+      const proxied = await forwardToUsProxy(env, payload);
+      if (proxied) {
+        return proxied;
+      }
+    }
+
     const mapped = formatGeminiUserError(info, 'cloudflare');
     const extraHeaders = mapped.retryAfterSeconds
       ? { 'Retry-After': String(mapped.retryAfterSeconds) }
@@ -164,12 +232,66 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
   }
 }
 
+async function handleTranslate(
+  request: CloudflareRequest,
+  env: CloudflareEnv,
+  allowProxyFallback: boolean
+): Promise<Response> {
+  let body: TranslateBody;
+  try {
+    body = (await request.json()) as TranslateBody;
+  } catch {
+    return jsonResponse({ error: 'Dữ liệu gửi lên không hợp lệ.' }, 400);
+  }
+
+  const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
+  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+  const targetLang: TargetLanguage = body.targetLang === 'vi' ? 'vi' : 'en';
+
+  if (!rawText) {
+    return jsonResponse({ error: 'Vui lòng nhập nội dung cần dịch.' }, 400);
+  }
+
+  if (rawText.length > 8000) {
+    return jsonResponse({ error: 'Đoạn văn bản quá dài (tối đa 8.000 ký tự).' }, 400);
+  }
+
+  const payload: NormalizedTranslatePayload = {
+    text: rawText,
+    mode,
+    targetLang,
+    regenerate: body.regenerate,
+  };
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+
+  if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
+    const proxied = await forwardToUsProxy(env, payload);
+    if (proxied) {
+      return proxied;
+    }
+  }
+
+  return runGeminiTranslation(payload, env, allowProxyFallback);
+}
+
+export class GeminiRegionProxy {
+  private readonly env: CloudflareEnv;
+
+  constructor(_ctx: unknown, env: CloudflareEnv) {
+    this.env = env;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    return handleTranslate(request as CloudflareRequest, this.env, false);
+  }
+}
+
 export default {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'POST' && url.pathname === '/api/translate') {
-      return handleTranslate(request, env);
+      return handleTranslate(request as CloudflareRequest, env, true);
     }
 
     return env.ASSETS.fetch(request);

@@ -3,7 +3,9 @@ import {
   CHAT_SYSTEM_INSTRUCTION,
   FORMAL_SYSTEM_INSTRUCTION,
   TRANSLATE_MODEL,
+  TargetLanguage,
   TranslationMode,
+  VI_SYSTEM_INSTRUCTION,
   buildTranslatePrompt,
 } from './prompts';
 
@@ -30,6 +32,27 @@ export function buildModelCandidates(preferredModel?: string): ModelCandidate[] 
   return candidates;
 }
 
+export function sanitizeInputText(raw: string): string {
+  // Strip null bytes, iOS object replacement chars (\uFFFC), and unpaired UTF-16 surrogates
+  let cleaned = raw.replace(/[\u0000\uFFFC]/g, '');
+  let result = '';
+  for (let i = 0; i < cleaned.length; i++) {
+    const code = cleaned.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < cleaned.length ? cleaned.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        result += cleaned[i] + cleaned[i + 1];
+        i++;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      // Skip lone low surrogate
+    } else {
+      result += cleaned[i];
+    }
+  }
+  return result.trim();
+}
+
 export interface GeminiErrorInfo {
   status: number;
   message: string;
@@ -38,6 +61,7 @@ export interface GeminiErrorInfo {
   isTransient: boolean;
   isNotFound: boolean;
   isAuthError: boolean;
+  isLocationUnsupported: boolean;
   retryAfterSeconds: number | null;
 }
 
@@ -55,6 +79,10 @@ export function inspectGeminiError(err: unknown): GeminiErrorInfo {
     numericStatus === 403 ||
     rawMessage.includes('API_KEY_INVALID') ||
     rawMessage.includes('PERMISSION_DENIED');
+
+  const isLocationUnsupported =
+    /User location is not supported/i.test(rawMessage) ||
+    (numericStatus === 400 && /FAILED_PRECONDITION/i.test(rawMessage));
 
   const isRateLimit =
     numericStatus === 429 ||
@@ -97,6 +125,7 @@ export function inspectGeminiError(err: unknown): GeminiErrorInfo {
     isTransient,
     isNotFound,
     isAuthError,
+    isLocationUnsupported,
     retryAfterSeconds,
   };
 }
@@ -112,6 +141,14 @@ export function formatGeminiUserError(
         envLabel === 'cloudflare'
           ? 'GEMINI_API_KEY không hợp lệ hoặc bị từ chối (403). Kiểm tra lại key trong Cloudflare Settings.'
           : 'API key không hợp lệ hoặc thiếu quyền truy cập. Kiểm tra lại trong Settings > Secrets.',
+    };
+  }
+
+  if (info.isLocationUnsupported) {
+    return {
+      status: 400,
+      error:
+        'Vùng máy chủ kết nối hiện tại bị Google Gemini hạn chế (400). Hãy thử tắt iCloud Private Relay / VPN hoặc thử lại sau giây lát.',
     };
   }
 
@@ -216,13 +253,21 @@ export async function openTranslateStreamWithFallback(
   options: {
     text: string;
     mode: TranslationMode;
+    targetLang?: TargetLanguage;
     regenerate?: boolean;
     preferredModel?: string;
   }
 ): Promise<OpenedTranslateStream> {
   const systemInstruction =
-    options.mode === 'formal' ? FORMAL_SYSTEM_INSTRUCTION : CHAT_SYSTEM_INSTRUCTION;
-  const contents = buildTranslatePrompt(options.text, options.regenerate);
+    options.targetLang === 'vi'
+      ? VI_SYSTEM_INSTRUCTION
+      : options.mode === 'formal'
+      ? FORMAL_SYSTEM_INSTRUCTION
+      : CHAT_SYSTEM_INSTRUCTION;
+  const contents =
+    options.targetLang === 'vi'
+      ? options.text
+      : buildTranslatePrompt(options.text, options.regenerate);
   const candidates = buildModelCandidates(options.preferredModel);
 
   let lastError: unknown = null;
