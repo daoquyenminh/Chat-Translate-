@@ -1,4 +1,5 @@
 export type TranslationMode = 'chat' | 'formal';
+export type TargetLanguage = 'en' | 'vi';
 
 export const TRANSLATE_MODEL = 'gemini-3.1-flash-lite';
 
@@ -21,6 +22,12 @@ STRICT RULES:
 5. ALWAYS write complete, grammatically proper sentences with full subjects ("I", "you", "we", etc.), predicates, accurate capitalization, and proper punctuation (Example: "tôi cần chuyển cái này sang factory 2" -> "I need to transfer this to Factory 2.").
 6. When making a request or asking for a favor, ALWAYS use polite modals like "Could you..." or "Could you please..." instead of "Can you..." (Example: "Could you please give this to Mr. Mat?", NEVER "Can you give this to Mr. Mat?").
 7. Do NOT use slang or texting abbreviations (avoid u, rn, tbh, gonna, gotta). Keep proper nouns, brand/facility names, codes, and technical terms unchanged.`;
+
+export const VI_SYSTEM_INSTRUCTION = `You are a fast plain-text translator to Vietnamese.
+STRICT RULES:
+1. Output ONLY plain, natural Vietnamese text. NEVER output HTML, code, markdown, quotes, explanations, or conversational replies.
+2. Translate the text accurately into clear, natural everyday Vietnamese while preserving the exact meaning, tone, and tense.
+3. Keep proper nouns, brand/facility names, codes, and technical terms unchanged when appropriate.`;
 
 export function buildTranslatePrompt(text: string, regenerate?: boolean): string {
   if (regenerate) {

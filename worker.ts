@@ -1,11 +1,10 @@
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
+import { TranslationMode } from './shared/prompts';
 import {
-  CHAT_SYSTEM_INSTRUCTION,
-  FORMAL_SYSTEM_INSTRUCTION,
-  TRANSLATE_MODEL,
-  TranslationMode,
-  buildTranslatePrompt,
-} from './shared/prompts';
+  formatGeminiUserError,
+  inspectGeminiError,
+  openTranslateStreamWithFallback,
+} from './shared/translateStream';
 
 interface AssetsFetcher {
   fetch(request: Request): Promise<Response>;
@@ -33,12 +32,17 @@ interface TranslateBody {
   regenerate?: boolean;
 }
 
-function jsonResponse(payload: Record<string, unknown>, status = 200): Response {
+function jsonResponse(
+  payload: Record<string, unknown>,
+  status = 200,
+  extraHeaders?: Record<string, string>
+): Response {
   return new Response(JSON.stringify(payload), {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'X-Cydia-Translate': '1',
+      ...extraHeaders,
     },
   });
 }
@@ -93,43 +97,6 @@ function createClient(apiKey: string): GoogleGenAI {
   });
 }
 
-function mapGeminiError(err: unknown, fallbackMessage: string): Response {
-  const errorObj = err as { status?: number; message?: string };
-  const status = errorObj?.status;
-  const msg = errorObj?.message ?? '';
-
-  if (
-    status === 403 ||
-    msg.includes('API_KEY_INVALID') ||
-    msg.includes('PERMISSION_DENIED')
-  ) {
-    return jsonResponse(
-      {
-        error:
-          'GEMINI_API_KEY không hợp lệ hoặc bị từ chối (403). Kiểm tra lại key trong Cloudflare Settings.',
-      },
-      403
-    );
-  }
-
-  if (status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
-    return jsonResponse(
-      { error: 'Đang vượt giới hạn lượt gọi tạm thời (429). Thử lại sau vài giây nhé.' },
-      429
-    );
-  }
-
-  if (status === 404 || msg.includes('NOT_FOUND')) {
-    return jsonResponse(
-      { error: 'Model không khả dụng với API key hiện tại (404).' },
-      404
-    );
-  }
-
-  const suffix = status ? ` (${status})` : '';
-  return jsonResponse({ error: `${fallbackMessage}${suffix}` }, 502);
-}
-
 async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Response> {
   const apiKey = await resolveApiKey(env);
   if (!apiKey) {
@@ -156,33 +123,21 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
 
   try {
     const ai = createClient(apiKey);
-    const modelName =
-      typeof env.GEMINI_MODEL === 'string' && env.GEMINI_MODEL.trim()
-        ? env.GEMINI_MODEL.trim()
-        : TRANSLATE_MODEL;
-    const systemInstruction = mode === 'formal' ? FORMAL_SYSTEM_INSTRUCTION : CHAT_SYSTEM_INSTRUCTION;
-    const contents = buildTranslatePrompt(rawText, body.regenerate);
-
-    const streamResult = await ai.models.generateContentStream({
-      model: modelName,
-      contents,
-      config: {
-        systemInstruction,
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.MINIMAL,
-        },
-      },
+    const preferredModel = typeof env.GEMINI_MODEL === 'string' ? env.GEMINI_MODEL : undefined;
+    const opened = await openTranslateStreamWithFallback(ai, {
+      text: rawText,
+      mode,
+      regenerate: body.regenerate,
+      preferredModel,
     });
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of streamResult) {
-            const piece = chunk.text ?? '';
-            if (piece) {
-              controller.enqueue(encoder.encode(piece));
-            }
+          controller.enqueue(encoder.encode(opened.firstChunk));
+          for await (const piece of opened.rest) {
+            controller.enqueue(encoder.encode(piece));
           }
           controller.close();
         } catch (streamErr) {
@@ -200,7 +155,12 @@ async function handleTranslate(request: Request, env: CloudflareEnv): Promise<Re
       },
     });
   } catch (err) {
-    return mapGeminiError(err, 'Không thể dịch lúc này. Vui lòng thử lại.');
+    const info = inspectGeminiError(err);
+    const mapped = formatGeminiUserError(info, 'cloudflare');
+    const extraHeaders = mapped.retryAfterSeconds
+      ? { 'Retry-After': String(mapped.retryAfterSeconds) }
+      : undefined;
+    return jsonResponse({ error: mapped.error }, mapped.status, extraHeaders);
   }
 }
 

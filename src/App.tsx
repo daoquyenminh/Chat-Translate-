@@ -101,6 +101,14 @@ export default function App() {
           res = await fetchOnce();
         }
 
+        if (res.status === 429) {
+          const retryAfterHeader = Number(res.headers.get('retry-after') || '0');
+          if (Number.isFinite(retryAfterHeader) && retryAfterHeader > 0 && retryAfterHeader <= 5) {
+            await new Promise((resolve) => window.setTimeout(resolve, retryAfterHeader * 1000));
+            res = await fetchOnce();
+          }
+        }
+
         if (!res.ok) {
           let errMsg = 'Không thể dịch lúc này. Thử lại nhé.';
           const contentType = (res.headers.get('content-type') || '').toLowerCase();
@@ -236,6 +244,8 @@ export default function App() {
     async (messageId: string, sourceText: string) => {
       if (isLoading) return;
       const activeMode = mode;
+      const existing = messages.find((m) => m.id === messageId);
+      const isRetryFromError = Boolean(existing?.isError);
 
       setMessages((curr) =>
         curr.map((m) =>
@@ -247,7 +257,7 @@ export default function App() {
       setIsLoading(true);
       setStreamingMessageId(messageId);
 
-      const result = await streamTranslation(sourceText, activeMode, messageId, true);
+      const result = await streamTranslation(sourceText, activeMode, messageId, !isRetryFromError);
       const finishIso = new Date().toISOString();
 
       if (result.ok) {
@@ -278,7 +288,7 @@ export default function App() {
       setStreamingMessageId(null);
       setIsLoading(false);
     },
-    [isLoading, mode, setMessages, streamTranslation, triggerCopy]
+    [isLoading, messages, mode, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleClearChat = () => {

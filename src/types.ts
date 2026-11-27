@@ -8,6 +8,9 @@ export interface ChatMessage {
   mode?: TranslationMode;
   sourceText?: string;
   isError?: boolean;
+  viTranslation?: string;
+  showViTranslation?: boolean;
+  viError?: string;
 }
 
 export interface ChatTheme {

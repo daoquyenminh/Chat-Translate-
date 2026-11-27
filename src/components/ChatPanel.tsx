@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Check, RotateCcw } from 'lucide-react';
+import { ArrowUp, Check, Languages, Loader2, RotateCcw } from 'lucide-react';
 import { ChatMessage } from '../types';
 import { formatDateGroup, formatTime } from '../utils/formatters';
 
@@ -7,29 +7,35 @@ interface ChatPanelProps {
   messages: ChatMessage[];
   isLoading: boolean;
   streamingMessageId: string | null;
+  translatingViId: string | null;
   copiedMessageId: string | null;
   onCopyMessage: (messageId: string, text: string) => void;
   onSend: (text: string) => void;
   onRegenerate: (messageId: string, sourceText: string) => void;
+  onTranslateToVi: (messageId: string) => void;
 }
 
 export function ChatPanel({
   messages,
   isLoading,
   streamingMessageId,
+  translatingViId,
   copiedMessageId,
   onCopyMessage,
   onSend,
   onRegenerate,
+  onTranslateToVi,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const lastMsgText = messages[messages.length - 1]?.text ?? '';
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  }, [messages.length, lastMsgText, isLoading]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -145,19 +151,46 @@ export function ChatPanel({
                           : 'bg-[var(--cydia-bot-bg)] text-[var(--cydia-bot-text)] border border-[var(--cydia-bot-border)] hover:opacity-95 active:scale-[0.99] cursor-pointer'
                       }`}
                     >
-                      {msg.text}
+                      <div>{msg.text}</div>
+
+                      {msg.showViTranslation && (msg.viTranslation || msg.viError || translatingViId === msg.id) && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-2.5 pt-2 border-t border-[var(--cydia-bot-border)] text-[14px] leading-[1.5] cursor-text"
+                        >
+                          {msg.viError ? (
+                            <span className="text-red-600 text-[13px]">{msg.viError}</span>
+                          ) : msg.viTranslation ? (
+                            <span className="opacity-80">{msg.viTranslation}</span>
+                          ) : (
+                            <span className="opacity-50 text-[13px]">Đang dịch sang tiếng Việt...</span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
-                    {!msg.isError && !isCurrentlyStreaming && msg.sourceText && (
+                    {!msg.isError && !isCurrentlyStreaming && msg.text.trim().length > 0 && (
                       <button
                         type="button"
-                        disabled={isLoading}
-                        onClick={() => onRegenerate(msg.id, msg.sourceText!)}
-                        aria-label="Dịch lại"
-                        title="Dịch lại theo mode hiện tại"
-                        className="inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent text-[var(--cydia-chat-muted)] hover:text-[var(--cydia-chat-strong)] hover:bg-black/5 transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 pb-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
+                        disabled={isLoading || (translatingViId !== null && translatingViId !== msg.id)}
+                        onClick={() => onTranslateToVi(msg.id)}
+                        aria-label="Dịch sang tiếng Việt"
+                        title={
+                          msg.showViTranslation && msg.viTranslation
+                            ? 'Ẩn bản dịch tiếng Việt'
+                            : 'Dịch sang tiếng Việt'
+                        }
+                        className={`inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 pb-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${
+                          msg.showViTranslation && msg.viTranslation
+                            ? 'text-[var(--cydia-chat-strong)] bg-black/5'
+                            : 'text-[var(--cydia-chat-muted)] hover:text-[var(--cydia-chat-strong)] hover:bg-black/5'
+                        }`}
                       >
-                        <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.9} />
+                        {translatingViId === msg.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                        ) : (
+                          <Languages className="w-3.5 h-3.5" strokeWidth={1.9} />
+                        )}
                       </button>
                     )}
 
