@@ -206,7 +206,7 @@ export function ThemeSettingsModal({
                     Làm mới khung chat
                   </div>
                   <div className="text-[12px] text-[#8E8E93]">
-                    Xóa các tin nhắn hiện tại trên màn hình
+                    Xóa tin nhắn hiện tại (tự động xóa sau 00:00 mỗi ngày)
                   </div>
                 </div>
               </div>

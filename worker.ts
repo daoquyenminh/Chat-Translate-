@@ -38,11 +38,6 @@ interface CloudflareEnv {
   VITE_GEMINI_API_KEY?: SecretOrString;
   API_KEY?: SecretOrString;
   GOOGLE_API_KEY?: SecretOrString;
-  DEEPSEEK_API_KEY?: SecretOrString;
-  OPENAI_API_KEY?: SecretOrString;
-  ANTHROPIC_API_KEY?: SecretOrString;
-  OPENROUTER_API_KEY?: SecretOrString;
-  GEMINI_MODEL?: string;
   GEMINI_PROXY?: DurableObjectNamespaceLike;
   ASSETS: AssetsFetcher;
   [key: string]: unknown;
@@ -52,7 +47,6 @@ interface TranslateBody {
   text?: string;
   mode?: TranslationMode;
   targetLang?: TargetLanguage;
-  model?: string;
   regenerate?: boolean;
 }
 
@@ -60,7 +54,6 @@ interface NormalizedTranslatePayload {
   text: string;
   mode: TranslationMode;
   targetLang: TargetLanguage;
-  model?: string;
   regenerate?: boolean;
 }
 
@@ -174,12 +167,6 @@ function getOrCreateClient(apiKey: string): GoogleGenAI {
   return cachedWorkerClient;
 }
 
-const EXTERNAL_MODEL_IDS = new Set([
-  'deepseek-chat',
-  'gpt-4o-mini',
-  'claude-3-5-haiku-latest',
-]);
-
 async function forwardToUsProxy(
   env: CloudflareEnv,
   payload: NormalizedTranslatePayload
@@ -207,47 +194,11 @@ async function runGeminiTranslation(
 
   try {
     const ai = getOrCreateClient(apiKey);
-    const preferredModel =
-      typeof payload.model === 'string' && payload.model.trim()
-        ? payload.model.trim()
-        : typeof env.GEMINI_MODEL === 'string'
-        ? env.GEMINI_MODEL
-        : undefined;
-
-    let externalKeys:
-      | {
-          deepseekApiKey?: string;
-          openaiApiKey?: string;
-          anthropicApiKey?: string;
-          openrouterApiKey?: string;
-        }
-      | undefined;
-
-    if (preferredModel && EXTERNAL_MODEL_IDS.has(preferredModel)) {
-      const [providerKey, openrouterKey] = await Promise.all([
-        preferredModel === 'deepseek-chat'
-          ? resolveSingleSecret(env.DEEPSEEK_API_KEY)
-          : preferredModel === 'gpt-4o-mini'
-          ? resolveSingleSecret(env.OPENAI_API_KEY)
-          : resolveSingleSecret(env.ANTHROPIC_API_KEY),
-        resolveSingleSecret(env.OPENROUTER_API_KEY),
-      ]);
-      externalKeys = {
-        deepseekApiKey: preferredModel === 'deepseek-chat' ? providerKey || undefined : undefined,
-        openaiApiKey: preferredModel === 'gpt-4o-mini' ? providerKey || undefined : undefined,
-        anthropicApiKey:
-          preferredModel === 'claude-3-5-haiku-latest' ? providerKey || undefined : undefined,
-        openrouterApiKey: openrouterKey || undefined,
-      };
-    }
-
     const opened = await openTranslateStreamWithFallback(ai, {
       text: payload.text,
       mode: payload.mode,
       targetLang: payload.targetLang,
       regenerate: payload.regenerate,
-      preferredModel,
-      externalKeys,
     });
 
     const encoder = new TextEncoder();
@@ -319,7 +270,6 @@ async function handleTranslate(
     text: rawText,
     mode,
     targetLang,
-    model: typeof body.model === 'string' ? body.model.trim() : undefined,
     regenerate: body.regenerate,
   };
   const colo = (request.cf?.colo ?? '').toUpperCase();

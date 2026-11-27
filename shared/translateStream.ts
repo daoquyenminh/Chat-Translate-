@@ -9,59 +9,9 @@ import {
   buildTranslatePrompt,
 } from './prompts';
 
-export interface ModelCandidate {
-  model: string;
-  thinkingLevel?: ThinkingLevel;
-}
-
-export const FALLBACK_TRANSLATE_MODEL = 'gemini-4-hydrogen';
-
-export interface ExternalProviderKeys {
-  deepseekApiKey?: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-  openrouterApiKey?: string;
-}
-
-export function buildModelCandidates(preferredModel?: string): ModelCandidate[] {
-  const custom = preferredModel?.trim();
-
-  if (custom === FALLBACK_TRANSLATE_MODEL) {
-    return [
-      { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
-      { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
-    ];
-  }
-
-  if (custom === TRANSLATE_MODEL || !custom) {
-    return [
-      { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
-      { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
-    ];
-  }
-
-  // If user chose DeepSeek / GPT / Claude without external key, prioritize Gemini 4 Flash then Flash Lite
-  if (
-    custom === 'deepseek-chat' ||
-    custom === 'gpt-4o-mini' ||
-    custom === 'claude-3-5-haiku-latest'
-  ) {
-    return [
-      { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
-      { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
-    ];
-  }
-
-  return [
-    { model: custom },
-    { model: TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.MINIMAL },
-    { model: FALLBACK_TRANSLATE_MODEL, thinkingLevel: ThinkingLevel.LOW },
-  ];
-}
-
 export function sanitizeInputText(raw: string): string {
   // Strip null bytes, iOS object replacement chars (\uFFFC), and unpaired UTF-16 surrogates
-  let cleaned = raw.replace(/[\u0000\uFFFC]/g, '');
+  const cleaned = raw.replace(/[\u0000\uFFFC]/g, '');
   let result = '';
   for (let i = 0; i < cleaned.length; i++) {
     const code = cleaned.charCodeAt(i);
@@ -222,25 +172,18 @@ export interface OpenedTranslateStream {
   modelUsed: string;
 }
 
-async function openSingleCandidate(
+async function openFlashLiteStream(
   ai: GoogleGenAI,
-  candidate: ModelCandidate,
   contents: string,
   systemInstruction: string
 ): Promise<OpenedTranslateStream> {
-  const config: {
-    systemInstruction: string;
-    thinkingConfig?: { thinkingLevel: ThinkingLevel };
-  } = { systemInstruction };
-
-  if (candidate.thinkingLevel) {
-    config.thinkingConfig = { thinkingLevel: candidate.thinkingLevel };
-  }
-
   const rawStream = await ai.models.generateContentStream({
-    model: candidate.model,
+    model: TRANSLATE_MODEL,
     contents,
-    config,
+    config: {
+      systemInstruction,
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+    },
   });
 
   const iterator = rawStream[Symbol.asyncIterator]();
@@ -271,138 +214,8 @@ async function openSingleCandidate(
   return {
     firstChunk,
     rest: restGenerator(),
-    modelUsed: candidate.model,
+    modelUsed: TRANSLATE_MODEL,
   };
-}
-
-async function tryExternalProvider(
-  modelId: string,
-  contents: string,
-  systemInstruction: string,
-  keys?: ExternalProviderKeys
-): Promise<OpenedTranslateStream | null> {
-  if (!keys) return null;
-
-  let endpoint = '';
-  let apiKey = '';
-  let targetModel = modelId;
-  let isAnthropic = false;
-
-  if (modelId === 'deepseek-chat') {
-    if (keys.deepseekApiKey) {
-      endpoint = 'https://api.deepseek.com/chat/completions';
-      apiKey = keys.deepseekApiKey;
-      targetModel = 'deepseek-chat';
-    } else if (keys.openrouterApiKey) {
-      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-      apiKey = keys.openrouterApiKey;
-      targetModel = 'deepseek/deepseek-chat';
-    }
-  } else if (modelId === 'gpt-4o-mini') {
-    if (keys.openaiApiKey) {
-      endpoint = 'https://api.openai.com/v1/chat/completions';
-      apiKey = keys.openaiApiKey;
-      targetModel = 'gpt-4o-mini';
-    } else if (keys.openrouterApiKey) {
-      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-      apiKey = keys.openrouterApiKey;
-      targetModel = 'openai/gpt-4o-mini';
-    }
-  } else if (modelId === 'claude-3-5-haiku-latest') {
-    if (keys.anthropicApiKey) {
-      endpoint = 'https://api.anthropic.com/v1/messages';
-      apiKey = keys.anthropicApiKey;
-      targetModel = 'claude-3-5-haiku-latest';
-      isAnthropic = true;
-    } else if (keys.openrouterApiKey) {
-      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-      apiKey = keys.openrouterApiKey;
-      targetModel = 'anthropic/claude-3.5-haiku';
-    }
-  }
-
-  if (!endpoint || !apiKey) return null;
-
-  if (isAnthropic) {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: targetModel,
-        max_tokens: 1024,
-        system: systemInstruction,
-        messages: [{ role: 'user', content: contents }],
-      }),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { content?: Array<{ text?: string }> };
-    const text = (data.content?.[0]?.text ?? '').trim();
-    if (!text) return null;
-    async function* emptyRest(): AsyncGenerator<string, void, unknown> {}
-    return { firstChunk: text, rest: emptyRest(), modelUsed: targetModel };
-  }
-
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: targetModel,
-      stream: true,
-      messages: [
-        { role: 'system', content: systemInstruction },
-        { role: 'user', content: contents },
-      ],
-      temperature: 0.2,
-    }),
-  });
-
-  if (!res.ok || !res.body) return null;
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let sseBuffer = '';
-
-  async function* sseTokens(): AsyncGenerator<string, void, unknown> {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      sseBuffer += decoder.decode(value, { stream: true });
-      const lines = sseBuffer.split('\n');
-      sseBuffer = lines.pop() ?? '';
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line.startsWith('data:')) continue;
-        const dataStr = line.slice(5).trim();
-        if (!dataStr || dataStr === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(dataStr) as {
-            choices?: Array<{ delta?: { content?: string } }>;
-          };
-          const piece = parsed.choices?.[0]?.delta?.content ?? '';
-          if (piece) yield piece;
-        } catch {
-          // Ignore partial SSE chunk
-        }
-      }
-    }
-  }
-
-  const gen = sseTokens();
-  let firstChunk = '';
-  while (!firstChunk) {
-    const step = await gen.next();
-    if (step.done) return null;
-    if (step.value) firstChunk = step.value;
-  }
-
-  return { firstChunk, rest: gen, modelUsed: targetModel };
 }
 
 export async function openTranslateStreamWithFallback(
@@ -412,8 +225,6 @@ export async function openTranslateStreamWithFallback(
     mode: TranslationMode;
     targetLang?: TargetLanguage;
     regenerate?: boolean;
-    preferredModel?: string;
-    externalKeys?: ExternalProviderKeys;
   }
 ): Promise<OpenedTranslateStream> {
   const systemInstruction =
@@ -427,68 +238,30 @@ export async function openTranslateStreamWithFallback(
       ? options.text
       : buildTranslatePrompt(options.text, options.regenerate);
 
-  const customModel = options.preferredModel?.trim();
-  if (
-    customModel === 'deepseek-chat' ||
-    customModel === 'gpt-4o-mini' ||
-    customModel === 'claude-3-5-haiku-latest'
-  ) {
-    try {
-      const externalResult = await tryExternalProvider(
-        customModel,
-        contents,
-        systemInstruction,
-        options.externalKeys
-      );
-      if (externalResult) {
-        return externalResult;
-      }
-    } catch {
-      // Fallback to Gemini candidates below
-    }
-  }
-
-  const candidates = buildModelCandidates(options.preferredModel);
-
   let lastError: unknown = null;
 
-  for (let round = 0; round < 2; round++) {
-    let sawRetryable = false;
-    let shortestRetryMs = 1600;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await openFlashLiteStream(ai, contents, systemInstruction);
+    } catch (err: unknown) {
+      lastError = err;
+      const info = inspectGeminiError(err);
 
-    for (const candidate of candidates) {
-      try {
-        return await openSingleCandidate(ai, candidate, contents, systemInstruction);
-      } catch (err: unknown) {
-        lastError = err;
-        const info = inspectGeminiError(err);
-
-        if (info.isAuthError) {
-          throw err;
-        }
-
-        if (info.isRateLimit || info.isTransient || info.isNotFound) {
-          if (!info.isDailyQuota && (info.isRateLimit || info.isTransient)) {
-            sawRetryable = true;
-            if (info.retryAfterSeconds !== null) {
-              const suggestedMs = info.retryAfterSeconds * 1000;
-              if (suggestedMs <= 4000) {
-                shortestRetryMs = Math.max(1200, suggestedMs);
-              }
-            }
-          }
-          continue;
-        }
-
+      if (info.isAuthError || info.isLocationUnsupported || info.isDailyQuota) {
         throw err;
       }
-    }
 
-    if (round === 0 && sawRetryable) {
-      await sleep(shortestRetryMs);
-      continue;
+      if (attempt === 0 && (info.isRateLimit || info.isTransient)) {
+        const retryMs =
+          info.retryAfterSeconds !== null && info.retryAfterSeconds * 1000 <= 4000
+            ? Math.max(1200, info.retryAfterSeconds * 1000)
+            : 1500;
+        await sleep(retryMs);
+        continue;
+      }
+
+      throw err;
     }
-    break;
   }
 
   throw lastError ?? new Error('TRANSLATE_FAILED');

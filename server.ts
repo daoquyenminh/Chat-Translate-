@@ -21,7 +21,6 @@ interface TranslateRequestBody {
   text?: string;
   mode?: TranslationMode;
   targetLang?: TargetLanguage;
-  model?: string;
   regenerate?: boolean;
 }
 
@@ -77,22 +76,11 @@ async function startServer(): Promise<void> {
 
     try {
       const ai = getGenAIClient();
-      const preferredModel =
-        typeof body.model === 'string' && body.model.trim()
-          ? body.model.trim()
-          : process.env.GEMINI_MODEL;
       const opened = await openTranslateStreamWithFallback(ai, {
         text: rawText,
         mode,
         targetLang,
         regenerate: body.regenerate,
-        preferredModel,
-        externalKeys: {
-          deepseekApiKey: process.env.DEEPSEEK_API_KEY,
-          openaiApiKey: process.env.OPENAI_API_KEY,
-          anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-          openrouterApiKey: process.env.OPENROUTER_API_KEY,
-        },
       });
 
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');

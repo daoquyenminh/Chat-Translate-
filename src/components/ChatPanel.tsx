@@ -2,14 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   ArrowUp,
   Check,
-  ChevronDown,
   ClipboardPaste,
   Languages,
   Loader2,
   RotateCcw,
   Square,
 } from 'lucide-react';
-import { ChatMessage, MODEL_OPTIONS, TranslateModelId } from '../types';
+import { ChatMessage } from '../types';
 import { formatDateGroup, formatTime } from '../utils/formatters';
 
 interface ChatPanelProps {
@@ -18,8 +17,6 @@ interface ChatPanelProps {
   streamingMessageId: string | null;
   translatingViId: string | null;
   copiedMessageId: string | null;
-  selectedModel: TranslateModelId;
-  onModelChange: (model: TranslateModelId) => void;
   onCopyMessage: (messageId: string, text: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
@@ -33,8 +30,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   streamingMessageId,
   translatingViId,
   copiedMessageId,
-  selectedModel,
-  onModelChange,
   onCopyMessage,
   onSend,
   onStop,
@@ -42,27 +37,11 @@ export const ChatPanel = React.memo(function ChatPanel({
   onTranslateToVi,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
-  const [showModelMenu, setShowModelMenu] = useState(false);
   const [pasteFeedback, setPasteFeedback] = useState<'pasted' | 'empty' | 'denied' | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
   const pasteTimerRef = useRef<number | null>(null);
-
-  const activeModelOption =
-    MODEL_OPTIONS.find((m) => m.id === selectedModel) ?? MODEL_OPTIONS[0];
-
-  useEffect(() => {
-    if (!showModelMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
-        setShowModelMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showModelMenu]);
 
   const lastMsgText = messages[messages.length - 1]?.text ?? '';
 
@@ -353,7 +332,7 @@ export const ChatPanel = React.memo(function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Minimal bottom composer with paste button, inline model selector & Send/Stop button */}
+      {/* Minimal bottom composer with paste button & Send/Stop button */}
       <div className="bg-white border-t border-[#EFEFF1] px-3 sm:px-6 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
         {(pasteFeedback === 'empty' || pasteFeedback === 'denied') && (
           <div className="mb-1.5 px-3 text-[12px] text-[#71717A]">
@@ -365,7 +344,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
         <form
           onSubmit={handleSubmit}
-          className="relative flex items-end gap-1 bg-[#F4F4F5] rounded-[28px] pl-1.5 pr-1.5 py-1.5"
+          className="relative flex items-end gap-1.5 bg-[#F4F4F5] rounded-[28px] pl-1.5 pr-1.5 py-1.5"
         >
           <button
             type="button"
@@ -388,7 +367,6 @@ export const ChatPanel = React.memo(function ChatPanel({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             onFocus={() => {
-              setShowModelMenu(false);
               window.setTimeout(() => {
                 if (window.scrollY !== 0) window.scrollTo(0, 0);
                 bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
@@ -397,67 +375,6 @@ export const ChatPanel = React.memo(function ChatPanel({
             placeholder="Nhập tin nhắn..."
             className="flex-1 min-w-0 bg-transparent resize-none py-2.5 pl-1 text-[16px] sm:text-[15px] leading-[1.45] text-[#111111] placeholder:text-[#8E8E93] focus:outline-none max-h-36"
           />
-
-          {/* Model selector inside composer */}
-          <div ref={modelMenuRef} className="relative shrink-0 self-end">
-            <button
-              type="button"
-              onClick={() => setShowModelMenu((prev) => !prev)}
-              aria-label="Chọn model dịch"
-              title={`Model hiện tại: ${activeModelOption.label}`}
-              className="inline-flex items-center gap-1 h-10 px-2.5 rounded-full text-[12px] font-medium text-[#52525B] hover:text-[#111111] hover:bg-black/5 active:scale-95 transition-all cursor-pointer select-none"
-            >
-              <span className="max-w-[76px] sm:max-w-[100px] truncate">
-                {activeModelOption.shortLabel}
-              </span>
-              <ChevronDown
-                className={`w-3.5 h-3.5 opacity-70 transition-transform duration-150 ${
-                  showModelMenu ? 'rotate-180' : ''
-                }`}
-                strokeWidth={2}
-              />
-            </button>
-
-            {showModelMenu && (
-              <div className="absolute right-0 bottom-12 w-60 bg-white rounded-2xl border border-[#E5E5EA] shadow-lg p-1.5 z-30">
-                <div className="px-2.5 py-1.5 text-[11px] font-semibold text-[#8E8E93] uppercase tracking-wider">
-                  Model dịch
-                </div>
-                <div className="space-y-0.5">
-                  {MODEL_OPTIONS.map((opt) => {
-                    const isSelected = opt.id === selectedModel;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => {
-                          onModelChange(opt.id);
-                          setShowModelMenu(false);
-                        }}
-                        className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-[#111111] text-white'
-                            : 'text-[#111111] hover:bg-[#F4F4F5]'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="text-[13px] font-medium truncate">{opt.label}</div>
-                          <div
-                            className={`text-[11px] truncate ${
-                              isSelected ? 'text-white/75' : 'text-[#8E8E93]'
-                            }`}
-                          >
-                            {opt.badge}
-                          </div>
-                        </div>
-                        {isSelected && <Check className="w-4 h-4 shrink-0" strokeWidth={2.3} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
 
           {isLoading ? (
             <button

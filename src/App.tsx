@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Settings } from 'lucide-react';
-import { ChatMessage, ChatTheme, MODEL_OPTIONS, ThemePreset, TranslateModelId, TranslationMode } from './types';
+import { ChatMessage, ChatTheme, ThemePreset, TranslationMode } from './types';
 import { INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
@@ -17,10 +17,65 @@ const ThemeSettingsModal = lazy(() =>
   import('./components/ThemeSettingsModal').then((m) => ({ default: m.ThemeSettingsModal }))
 );
 
+const MODE_STORAGE_KEY = 'cydia_translate_mode_v2';
+const MODE_COOKIE_KEY = 'cydia_mode_v1';
 const MESSAGES_STORAGE_KEY = 'cydia_translate_messages_v2';
 const MESSAGES_DAY_STORAGE_KEY = 'cydia_translate_messages_day_v1';
-const DEFAULT_MODEL_ID: TranslateModelId = 'gemini-3.1-flash-lite';
-const VALID_MODEL_IDS = new Set<string>(MODEL_OPTIONS.map((m) => m.id));
+
+function normalizeMode(raw: unknown): TranslationMode {
+  return raw === 'formal' ? 'formal' : 'chat';
+}
+
+function readModeCookie(): TranslationMode | null {
+  try {
+    const match = document.cookie
+      .split('; ')
+      .find((row) => row.startsWith(`${MODE_COOKIE_KEY}=`));
+    if (!match) return null;
+    const decoded = decodeURIComponent(match.slice(MODE_COOKIE_KEY.length + 1)).trim();
+    if (decoded === 'formal' || decoded === 'chat') return decoded;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistModeSetting(nextMode: TranslationMode): void {
+  const safe = normalizeMode(nextMode);
+  try {
+    window.localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(safe));
+  } catch {
+    // Ignore storage quota errors
+  }
+  try {
+    document.cookie = `${MODE_COOKIE_KEY}=${encodeURIComponent(safe)}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    // Ignore cookie errors
+  }
+}
+
+function loadSavedMode(): TranslationMode {
+  try {
+    const raw = window.localStorage.getItem(MODE_STORAGE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed === 'formal' || parsed === 'chat') return parsed;
+      } catch {
+        const trimmed = raw.trim();
+        if (trimmed === 'formal' || trimmed === 'chat') return trimmed;
+      }
+    }
+  } catch {
+    // Fall through to cookie backup
+  }
+  const fromCookie = readModeCookie();
+  if (fromCookie) {
+    persistModeSetting(fromCookie);
+    return fromCookie;
+  }
+  return 'chat';
+}
 
 function getLocalDateKey(date: Date = new Date()): string {
   const year = date.getFullYear();
@@ -66,6 +121,7 @@ function purgeExpiredMessagesBeforeHydrate(): void {
 }
 
 purgeExpiredMessagesBeforeHydrate();
+const INITIAL_SAVED_MODE = loadSavedMode();
 const INITIAL_SAVED_THEME = loadSavedTheme();
 applyThemeCssVars(INITIAL_SAVED_THEME);
 
@@ -85,10 +141,9 @@ function CydiaStarMark() {
 }
 
 export default function App() {
-  const [mode, setMode] = useLocalStorage<TranslationMode>('cydia_translate_mode_v2', 'chat');
-  const [storedModel, setStoredModel] = useLocalStorage<TranslateModelId>(
-    'cydia_translate_model_v1',
-    DEFAULT_MODEL_ID
+  const [storedMode, setStoredMode] = useLocalStorage<TranslationMode>(
+    MODE_STORAGE_KEY,
+    INITIAL_SAVED_MODE
   );
   const [storedTheme, setStoredTheme] = useLocalStorage<ChatTheme>(
     THEME_STORAGE_KEY,
@@ -103,7 +158,19 @@ export default function App() {
     INITIAL_MESSAGES
   );
 
+  const [todayKey, setTodayKey] = useState<string>(() => getLocalDateKey());
+
+  const mode = normalizeMode(storedMode);
   const theme = useMemo(() => normalizeTheme(storedTheme), [storedTheme]);
+
+  const handleModeChange = useCallback(
+    (nextMode: TranslationMode) => {
+      const safe = normalizeMode(nextMode);
+      persistModeSetting(safe);
+      setStoredMode(safe);
+    },
+    [setStoredMode]
+  );
 
   const handleThemeChange = useCallback(
     (nextTheme: ChatTheme) => {
@@ -136,18 +203,6 @@ export default function App() {
     [setSavedThemes]
   );
 
-  const selectedModel: TranslateModelId = VALID_MODEL_IDS.has(storedModel)
-    ? storedModel
-    : DEFAULT_MODEL_ID;
-
-  const handleModelChange = useCallback(
-    (nextModel: TranslateModelId) => {
-      if (!VALID_MODEL_IDS.has(nextModel)) return;
-      setStoredModel(nextModel);
-    },
-    [setStoredModel]
-  );
-
   const [isLoading, setIsLoading] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [translatingViId, setTranslatingViId] = useState<string | null>(null);
@@ -158,15 +213,12 @@ export default function App() {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const visibleMessages = useMemo(
-    () => messages.filter((m) => m.id !== 'welcome-msg'),
-    [messages]
+    () =>
+      messages.filter(
+        (m) => m.id !== 'welcome-msg' && isTimestampFromDateKey(m.createdAt, todayKey)
+      ),
+    [messages, todayKey]
   );
-
-  useEffect(() => {
-    if (!VALID_MODEL_IDS.has(storedModel)) {
-      setStoredModel(DEFAULT_MODEL_ID);
-    }
-  }, [storedModel, setStoredModel]);
 
   useEffect(() => {
     if (messages.some((m) => m.id === 'welcome-msg')) {
@@ -174,12 +226,14 @@ export default function App() {
     }
   }, [messages, setMessages]);
 
-  // Automatically clear all chat history once the local calendar day ends
+  // Keep chat history strictly within the current local day; auto-clear right after 00:00
   useEffect(() => {
     let midnightTimer: number | null = null;
 
     const clearIfNewDay = () => {
-      const todayKey = getLocalDateKey();
+      const currentDayKey = getLocalDateKey();
+      setTodayKey((prev) => (prev === currentDayKey ? prev : currentDayKey));
+
       let savedDay: string | null = null;
       try {
         savedDay = window.localStorage.getItem(MESSAGES_DAY_STORAGE_KEY);
@@ -187,18 +241,18 @@ export default function App() {
         // Ignore storage errors
       }
 
-      if (savedDay && savedDay !== todayKey) {
+      if (savedDay && savedDay !== currentDayKey) {
         setMessages([]);
       } else {
         setMessages((curr) => {
           if (curr.length === 0) return curr;
-          const hasPreviousDayMsg = curr.some((m) => !isTimestampFromDateKey(m.createdAt, todayKey));
-          return hasPreviousDayMsg ? [] : curr;
+          const hasExpired = curr.some((m) => !isTimestampFromDateKey(m.createdAt, currentDayKey));
+          return hasExpired ? [] : curr;
         });
       }
 
       try {
-        window.localStorage.setItem(MESSAGES_DAY_STORAGE_KEY, todayKey);
+        window.localStorage.setItem(MESSAGES_DAY_STORAGE_KEY, currentDayKey);
       } catch {
         // Ignore storage errors
       }
@@ -215,9 +269,10 @@ export default function App() {
         now.getDate() + 1,
         0,
         0,
-        1
+        0,
+        50
       );
-      const delayMs = Math.max(1000, nextMidnight.getTime() - now.getTime());
+      const delayMs = Math.max(250, nextMidnight.getTime() - now.getTime());
       midnightTimer = window.setTimeout(() => {
         clearIfNewDay();
         scheduleNextMidnight();
@@ -226,6 +281,9 @@ export default function App() {
 
     clearIfNewDay();
     scheduleNextMidnight();
+
+    // Backup periodic check in case the device sleeps across 00:00 and throttles long timers
+    const periodicCheck = window.setInterval(clearIfNewDay, 30_000);
 
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -236,15 +294,22 @@ export default function App() {
 
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
     window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('pageshow', handleVisibilityOrFocus);
 
     return () => {
       if (midnightTimer !== null) {
         window.clearTimeout(midnightTimer);
       }
+      window.clearInterval(periodicCheck);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('pageshow', handleVisibilityOrFocus);
     };
   }, [setMessages]);
+
+  useEffect(() => {
+    persistModeSetting(mode);
+  }, [mode]);
 
   useEffect(() => {
     applyThemeCssVars(theme);
@@ -334,7 +399,6 @@ export default function App() {
     async (
       text: string,
       targetMode: TranslationMode,
-      targetModel: TranslateModelId,
       messageId: string,
       regenerate: boolean,
       signal: AbortSignal
@@ -350,7 +414,6 @@ export default function App() {
           body: JSON.stringify({
             text,
             mode: targetMode,
-            model: targetModel,
             regenerate,
           }),
         });
@@ -465,9 +528,17 @@ export default function App() {
 
   const handleSend = useCallback(
     async (text: string) => {
-      const nowIso = new Date().toISOString();
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const currentDayKey = getLocalDateKey(now);
+      setTodayKey(currentDayKey);
+      try {
+        window.localStorage.setItem(MESSAGES_DAY_STORAGE_KEY, currentDayKey);
+      } catch {
+        // Ignore storage errors
+      }
+
       const activeMode = mode;
-      const activeModel = selectedModel;
       const userMsg: ChatMessage = {
         id: `u-${Date.now()}`,
         role: 'user',
@@ -481,7 +552,6 @@ export default function App() {
         text: '',
         createdAt: nowIso,
         mode: activeMode,
-        model: activeModel,
         sourceText: text,
       };
 
@@ -491,14 +561,19 @@ export default function App() {
       const controller = new AbortController();
       abortControllerRef.current = controller;
 
-      setMessages((curr) => [...curr.filter((m) => m.id !== 'welcome-msg'), userMsg, placeholderMsg]);
+      setMessages((curr) => [
+        ...curr.filter(
+          (m) => m.id !== 'welcome-msg' && isTimestampFromDateKey(m.createdAt, currentDayKey)
+        ),
+        userMsg,
+        placeholderMsg,
+      ]);
       setIsLoading(true);
       setStreamingMessageId(assistantId);
 
       const result = await streamTranslation(
         text,
         activeMode,
-        activeModel,
         assistantId,
         false,
         controller.signal
@@ -532,14 +607,13 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [mode, selectedModel, setMessages, streamTranslation, triggerCopy]
+    [mode, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleRegenerate = useCallback(
     async (messageId: string, sourceText: string) => {
       if (isLoading) return;
       const activeMode = mode;
-      const activeModel = selectedModel;
       const existing = messages.find((m) => m.id === messageId);
       const isRetryFromError = Boolean(existing?.isError);
 
@@ -552,7 +626,7 @@ export default function App() {
       setMessages((curr) =>
         curr.map((m) =>
           m.id === messageId
-            ? { ...m, text: '', mode: activeMode, model: activeModel, isError: false }
+            ? { ...m, text: '', mode: activeMode, isError: false }
             : m
         )
       );
@@ -562,7 +636,6 @@ export default function App() {
       const result = await streamTranslation(
         sourceText,
         activeMode,
-        activeModel,
         messageId,
         !isRetryFromError,
         controller.signal
@@ -577,7 +650,6 @@ export default function App() {
                   ...m,
                   text: result.translation,
                   mode: activeMode,
-                  model: activeModel,
                   createdAt: finishIso,
                   isError: false,
                 }
@@ -603,7 +675,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [isLoading, messages, mode, selectedModel, setMessages, streamTranslation, triggerCopy]
+    [isLoading, messages, mode, setMessages, streamTranslation, triggerCopy]
   );
 
   const handleTranslateToVi = useCallback(
@@ -637,7 +709,6 @@ export default function App() {
           body: JSON.stringify({
             text: target.text,
             mode: target.mode ?? mode,
-            model: selectedModel,
             targetLang: 'vi',
           }),
         });
@@ -690,7 +761,7 @@ export default function App() {
         setTranslatingViId(null);
       }
     },
-    [isLoading, messages, mode, selectedModel, setMessages, translatingViId]
+    [isLoading, messages, mode, setMessages, translatingViId]
   );
 
   const handleClearChat = () => {
@@ -703,44 +774,40 @@ export default function App() {
   };
 
   return (
-    <div className="fixed inset-x-0 top-[var(--app-offset-top)] h-[var(--app-vh)] w-full bg-[#F2F2F4] flex justify-center overflow-hidden">
-      <div className="w-full max-w-[960px] h-full bg-white flex flex-col sm:border-x border-[#E8E8EB] overflow-hidden">
-        <header className="bg-white border-b border-[#EFEFF1] pt-[env(safe-area-inset-top)] shrink-0 z-10">
-          <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[60px] sm:h-[64px]">
-            <div className="flex items-center gap-3 min-w-0">
-              <CydiaStarMark />
-              <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
-                Cydia Translate
-              </h1>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowThemeSettings(true)}
-              aria-label="Cài đặt"
-              title="Cài đặt"
-              className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
-            >
-              <Settings className="w-5 h-5" strokeWidth={1.9} />
-            </button>
+    <div className="fixed inset-x-0 top-[var(--app-offset-top)] h-[var(--app-vh)] w-full bg-white flex flex-col overflow-hidden">
+      <header className="bg-white border-b border-[#EFEFF1] pt-[env(safe-area-inset-top)] shrink-0 z-10">
+        <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[60px] sm:h-[64px]">
+          <div className="flex items-center gap-3 min-w-0">
+            <CydiaStarMark />
+            <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
+              Cydia Translate
+            </h1>
           </div>
-        </header>
 
-        <ChatPanel
-          messages={visibleMessages}
-          isLoading={isLoading}
-          streamingMessageId={streamingMessageId}
-          translatingViId={translatingViId}
-          copiedMessageId={copiedMessageId}
-          selectedModel={selectedModel}
-          onModelChange={handleModelChange}
-          onCopyMessage={triggerCopy}
-          onSend={handleSend}
-          onStop={handleStop}
-          onRegenerate={handleRegenerate}
-          onTranslateToVi={handleTranslateToVi}
-        />
-      </div>
+          <button
+            type="button"
+            onClick={() => setShowThemeSettings(true)}
+            aria-label="Cài đặt"
+            title="Cài đặt"
+            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
+          >
+            <Settings className="w-5 h-5" strokeWidth={1.9} />
+          </button>
+        </div>
+      </header>
+
+      <ChatPanel
+        messages={visibleMessages}
+        isLoading={isLoading}
+        streamingMessageId={streamingMessageId}
+        translatingViId={translatingViId}
+        copiedMessageId={copiedMessageId}
+        onCopyMessage={triggerCopy}
+        onSend={handleSend}
+        onStop={handleStop}
+        onRegenerate={handleRegenerate}
+        onTranslateToVi={handleTranslateToVi}
+      />
 
       {showThemeSettings && (
         <Suspense fallback={null}>
@@ -749,7 +816,7 @@ export default function App() {
             mode={mode}
             theme={theme}
             savedThemes={savedThemes}
-            onModeChange={setMode}
+            onModeChange={handleModeChange}
             onThemeChange={handleThemeChange}
             onSaveCustomTheme={handleSaveCustomTheme}
             onDeleteCustomTheme={handleDeleteCustomTheme}
