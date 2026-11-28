@@ -2,15 +2,17 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   ArrowUp,
   BookOpen,
+  Bot,
   Check,
-  ClipboardPaste,
   Languages,
   Loader2,
+  Mic,
   RotateCcw,
   Square,
   Volume2,
 } from 'lucide-react';
 import { ChatMessage, SpeechHighlightRange, VoiceGender } from '../types';
+import { useVoiceInput } from '../hooks/useVoiceInput';
 import { formatDateGroup, formatTime } from '../utils/formatters';
 
 interface ChatPanelProps {
@@ -23,6 +25,7 @@ interface ChatPanelProps {
   loadingSpeechKey: string | null;
   speechHighlight: SpeechHighlightRange | null;
   voiceGender: VoiceGender;
+  voiceSilenceSeconds: number;
   onCopyMessage: (messageId: string, text: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
@@ -30,6 +33,8 @@ interface ChatPanelProps {
   onTranslateToVi: (messageId: string) => void;
   onOpenStudy: (messageId: string) => void;
   onSpeak: (key: string, text: string, mode?: 'chat' | 'formal') => void;
+  onBeforeStartVoice?: () => void;
+  onOpenLiveTalk: () => void;
 }
 
 function renderSpeechHighlightedText(
@@ -62,6 +67,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   loadingSpeechKey,
   speechHighlight,
   voiceGender,
+  voiceSilenceSeconds,
   onCopyMessage,
   onSend,
   onStop,
@@ -69,13 +75,39 @@ export const ChatPanel = React.memo(function ChatPanel({
   onTranslateToVi,
   onOpenStudy,
   onSpeak,
+  onBeforeStartVoice,
+  onOpenLiveTalk,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
-  const [pasteFeedback, setPasteFeedback] = useState<'pasted' | 'empty' | 'denied' | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const pasteTimerRef = useRef<number | null>(null);
+  const prevVoiceStatusRef = useRef<'idle' | 'listening' | 'transcribing'>('idle');
+
+  const voice = useVoiceInput({
+    silenceTimeoutMs: Math.round(voiceSilenceSeconds * 1000),
+    onBeforeStart: onBeforeStartVoice,
+    onTranscriptChange: (mergedText) => {
+      setInput(mergedText);
+    },
+  });
+
+  useEffect(() => {
+    const prev = prevVoiceStatusRef.current;
+    prevVoiceStatusRef.current = voice.status;
+    if (prev !== 'idle' && voice.status === 'idle') {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        const len = el.value.length;
+        try {
+          el.setSelectionRange(len, len);
+        } catch {
+          // Ignore selection errors on unsupported inputs
+        }
+      }
+    }
+  }, [voice.status]);
 
   const lastMsgText = messages[messages.length - 1]?.text ?? '';
 
@@ -103,71 +135,21 @@ export const ChatPanel = React.memo(function ChatPanel({
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
   }, [input]);
 
-  useEffect(() => {
-    return () => {
-      if (pasteTimerRef.current !== null) {
-        window.clearTimeout(pasteTimerRef.current);
-      }
-    };
-  }, []);
-
-  const flashPasteFeedback = (status: 'pasted' | 'empty' | 'denied', durationMs = 1500) => {
-    setPasteFeedback(status);
-    if (pasteTimerRef.current !== null) {
-      window.clearTimeout(pasteTimerRef.current);
+  const handleOpenLiveTalk = () => {
+    if (voice.status === 'listening') {
+      voice.stopListening();
     }
-    pasteTimerRef.current = window.setTimeout(() => {
-      setPasteFeedback(null);
-      pasteTimerRef.current = null;
-    }, durationMs);
-  };
-
-  const handlePasteFromClipboard = async () => {
-    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
-      textareaRef.current?.focus();
-      flashPasteFeedback('denied', 2200);
-      return;
+    if (voice.error) {
+      voice.clearError();
     }
-
-    try {
-      const clipText = (await navigator.clipboard.readText()).trim();
-      if (!clipText) {
-        textareaRef.current?.focus();
-        flashPasteFeedback('empty', 1600);
-        return;
-      }
-
-      const el = textareaRef.current;
-      if (el && document.activeElement === el) {
-        const start = el.selectionStart ?? input.length;
-        const end = el.selectionEnd ?? input.length;
-        const nextVal = `${input.slice(0, start)}${clipText}${input.slice(end)}`;
-        setInput(nextVal);
-        const caretPos = start + clipText.length;
-        window.requestAnimationFrame(() => {
-          el.focus();
-          el.setSelectionRange(caretPos, caretPos);
-        });
-      } else {
-        const nextVal = input.trim().length > 0 ? `${input.trimEnd()} ${clipText}` : clipText;
-        setInput(nextVal);
-        window.requestAnimationFrame(() => {
-          if (el) {
-            el.focus();
-            el.setSelectionRange(nextVal.length, nextVal.length);
-          }
-        });
-      }
-
-      flashPasteFeedback('pasted', 1200);
-    } catch {
-      textareaRef.current?.focus();
-      flashPasteFeedback('denied', 2200);
-    }
+    onOpenLiveTalk();
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
+    if (voice.status === 'listening') {
+      voice.stopListening();
+    }
     const trimmed = input.trim();
     if (!trimmed || isLoading) return;
     setInput('');
@@ -234,7 +216,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                         handleBubbleClick(msg);
                       }
                     }}
-                    className="max-w-[82%] sm:max-w-[74%] bg-[var(--cydia-user-bg)] text-[var(--cydia-user-text)] px-4 py-3 rounded-[20px] rounded-br-[6px] text-[15px] leading-[1.55] whitespace-pre-wrap break-words cursor-pointer hover:opacity-95 active:scale-[0.99] transition-all"
+                    className="max-w-[82%] sm:max-w-[74%] bg-[var(--cydia-user-bg)] text-[var(--cydia-user-text)] px-4 py-3 rounded-[20px] rounded-br-[6px] text-[length:var(--cydia-chat-font-size)] leading-[1.55] whitespace-pre-wrap break-words cursor-pointer hover:opacity-95 active:scale-[0.99] transition-[opacity,transform,background-color]"
                   >
                     {msg.text}
                   </div>
@@ -265,7 +247,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                           handleBubbleClick(msg);
                         }
                       }}
-                      className={`max-w-[84%] sm:max-w-[78%] px-4 py-3 rounded-[20px] rounded-bl-[6px] text-[15px] leading-[1.55] whitespace-pre-wrap break-words transition-all duration-150 ${
+                      className={`max-w-[84%] sm:max-w-[78%] px-4 py-3 rounded-[20px] rounded-bl-[6px] text-[length:var(--cydia-chat-font-size)] leading-[1.55] whitespace-pre-wrap break-words transition-[opacity,transform,border-color,background-color] duration-150 ${
                         msg.isError
                           ? 'bg-red-50 text-red-700 border border-red-200'
                           : isCopied
@@ -283,7 +265,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                       {msg.showViTranslation && (msg.viTranslation || msg.viError || translatingViId === msg.id) && (
                         <div
                           onClick={(e) => e.stopPropagation()}
-                          className="mt-2.5 pt-2 border-t border-[var(--cydia-bot-border)] text-[14px] leading-[1.5] cursor-text"
+                          className="mt-2.5 pt-2 border-t border-[var(--cydia-bot-border)] text-[length:calc(var(--cydia-chat-font-size)-1px)] leading-[1.5] cursor-text"
                         >
                           {msg.viError ? (
                             <span className="text-red-600 text-[13px]">{msg.viError}</span>
@@ -418,39 +400,56 @@ export const ChatPanel = React.memo(function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Minimal bottom composer with paste button & Send/Stop button */}
+      {/* Minimal bottom composer with paste, voice dictation, and Send/Stop button */}
       <div className="bg-white border-t border-[#EFEFF1] px-3 sm:px-6 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
-        {(pasteFeedback === 'empty' || pasteFeedback === 'denied') && (
-          <div className="mb-1.5 px-3 text-[12px] text-[#71717A]">
-            {pasteFeedback === 'empty'
-              ? 'Clipboard hiện đang trống.'
-              : 'Trình duyệt chặn đọc clipboard — hãy chạm giữ ô nhập để dán.'}
+        {voice.status === 'transcribing' && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mb-2 px-3 flex items-center gap-2 text-[12.5px] text-[#52525B]"
+          >
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--cydia-accent)] shrink-0" />
+            <span>Đang chuyển giọng nói thành chữ...</span>
+          </div>
+        )}
+
+        {voice.status === 'idle' && voice.error && (
+          <div role="alert" className="mb-1.5 px-3 text-[12px] text-red-600">
+            {voice.error}
           </div>
         )}
 
         <form
           onSubmit={handleSubmit}
-          className="relative flex items-end gap-1.5 bg-[#F4F4F5] rounded-[28px] pl-1.5 pr-1.5 py-1.5"
+          className={`relative flex items-end gap-1.5 bg-[#F4F4F5] rounded-[28px] pl-1.5 pr-1.5 py-1.5 transition-shadow ${
+            voice.status === 'listening'
+              ? 'ring-[1.5px] ring-[var(--cydia-accent)]/45 bg-white'
+              : ''
+          }`}
         >
           <button
             type="button"
-            onClick={() => void handlePasteFromClipboard()}
-            aria-label="Dán từ clipboard"
-            title="Dán từ clipboard"
-            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-black/5 active:scale-95 transition-all shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
+            onClick={handleOpenLiveTalk}
+            aria-label="Trò chuyện luyện nói tiếng Anh với robot AI"
+            title="Luyện giao tiếp tiếng Anh với AI"
+            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[var(--cydia-accent)] hover:bg-black/5 active:scale-95 transition-all shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
           >
-            {pasteFeedback === 'pasted' ? (
-              <Check className="w-4 h-4 text-emerald-600" strokeWidth={2.3} />
-            ) : (
-              <ClipboardPaste className="w-[18px] h-[18px]" strokeWidth={1.9} />
-            )}
+            <Bot className="w-[20px] h-[20px]" strokeWidth={1.9} />
           </button>
 
           <textarea
             ref={textareaRef}
             rows={1}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              if (voice.status === 'listening') {
+                voice.stopListening();
+              }
+              if (voice.error) {
+                voice.clearError();
+              }
+              setInput(e.target.value);
+            }}
             onKeyDown={handleKeyDown}
             onFocus={() => {
               window.setTimeout(() => {
@@ -458,9 +457,48 @@ export const ChatPanel = React.memo(function ChatPanel({
                 bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
               }, 120);
             }}
-            placeholder="Nhập tin nhắn..."
+            placeholder={voice.status === 'listening' ? 'Đang nghe bạn nói...' : 'Nhập tin nhắn...'}
             className="flex-1 min-w-0 bg-transparent resize-none py-2.5 pl-1 text-[16px] sm:text-[15px] leading-[1.45] text-[#111111] placeholder:text-[#8E8E93] focus:outline-none max-h-36"
           />
+
+          {voice.isSupported && !isLoading && (
+            <button
+              type="button"
+              disabled={voice.status === 'transcribing'}
+              onClick={() => voice.toggleListening(input)}
+              aria-label={
+                voice.status === 'listening'
+                  ? 'Dừng ghi âm giọng nói'
+                  : voice.status === 'transcribing'
+                  ? 'Đang xử lý giọng nói'
+                  : 'Nhập bằng giọng nói (Việt – Anh)'
+              }
+              title={
+                voice.status === 'listening'
+                  ? 'Dừng ghi âm'
+                  : `Nhập bằng giọng nói (tự dừng sau ${Number(voiceSilenceSeconds.toFixed(1))}s im lặng)`
+              }
+              className={`relative flex items-center justify-center w-10 h-10 rounded-full shrink-0 transition-all duration-150 active:scale-95 cursor-pointer disabled:opacity-60 disabled:cursor-wait focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${
+                voice.status === 'listening'
+                  ? 'bg-[var(--cydia-accent)] text-[var(--cydia-accent-text)]'
+                  : 'text-[#52525B] hover:text-[#111111] hover:bg-black/5'
+              }`}
+            >
+              {voice.status === 'listening' && (
+                <span
+                  aria-hidden="true"
+                  className="mic-pulse-ring pointer-events-none absolute inset-0 rounded-full bg-[var(--cydia-accent)]"
+                />
+              )}
+              {voice.status === 'transcribing' ? (
+                <Loader2 className="relative w-[18px] h-[18px] animate-spin" strokeWidth={2} />
+              ) : voice.status === 'listening' ? (
+                <Square className="relative w-3.5 h-3.5 fill-current" strokeWidth={2} />
+              ) : (
+                <Mic className="relative w-[19px] h-[19px]" strokeWidth={1.9} />
+              )}
+            </button>
+          )}
 
           {isLoading ? (
             <button
@@ -475,7 +513,7 @@ export const ChatPanel = React.memo(function ChatPanel({
           ) : (
             <button
               type="submit"
-              disabled={!input.trim()}
+              disabled={!input.trim() || voice.status === 'transcribing'}
               aria-label="Gửi tin nhắn"
               title="Gửi"
               className="flex items-center justify-center w-10 h-10 rounded-full bg-[var(--cydia-accent)] text-[var(--cydia-accent-text)] shrink-0 transition-all duration-150 hover:opacity-90 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"

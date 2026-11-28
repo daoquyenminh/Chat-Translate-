@@ -4,9 +4,11 @@ import {
   TranslationMode,
   VoiceGender,
 } from '../shared/prompts';
-import { SpeechWordTiming } from '../shared/edgeTts';
+import { EdgeVoiceId, EdgeVoiceOption, SpeechWordTiming } from '../shared/edgeTts';
 
 export type {
+  EdgeVoiceId,
+  EdgeVoiceOption,
   SpeechWordTiming,
   StudyAnalysis,
   StudyHighlightSegment,
@@ -42,6 +44,8 @@ export interface SavedLesson {
   data: StudyAnalysis;
   savedAt: string;
 }
+
+export type ChatFontSize = number;
 
 export interface ChatTheme {
   accentColor: string;

@@ -16,6 +16,7 @@
   --cydia-chat-bg: #FAFAFA;
   --cydia-chat-muted: #8E8E93;
   --cydia-chat-strong: #111111;
+  --cydia-chat-font-size: 15px;
 }
 
 @layer base {
@@ -57,9 +58,204 @@
   animation-delay: 0.32s;
 }
 
+.cydia-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 9999px;
+  outline: none;
+  touch-action: none;
+}
+
+.cydia-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: var(--cydia-accent);
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.cydia-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.08);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+}
+
+.cydia-slider::-webkit-slider-thumb:active {
+  transform: scale(1.14);
+}
+
+.cydia-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: var(--cydia-accent);
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.cydia-slider::-moz-range-thumb:hover {
+  transform: scale(1.08);
+}
+
+.cydia-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.16);
+}
+
+@keyframes drawerSlideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes drawerFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.settings-drawer-panel {
+  animation: drawerSlideInRight 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.settings-drawer-backdrop {
+  animation: drawerFadeIn 0.18s ease-out both;
+}
+
+@keyframes micPulseRing {
+  0% {
+    transform: scale(1);
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(1.42);
+    opacity: 0;
+  }
+}
+
+@keyframes voiceWaveIdle {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.mic-pulse-ring {
+  animation: micPulseRing 1.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.voice-wave-bar {
+  transform-origin: center;
+  animation: voiceWaveIdle 0.9s ease-in-out infinite;
+}
+
+.voice-wave-bar:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.voice-wave-bar:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.voice-wave-bar:nth-child(4) {
+  animation-delay: 0.45s;
+}
+
+@keyframes liveModalEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes robotFloat {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes robotEyeBlink {
+  0%, 44%, 48%, 100% {
+    transform: scaleY(1);
+  }
+  46% {
+    transform: scaleY(0.12);
+  }
+}
+
+@keyframes robotThinkingPulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+.live-modal-enter {
+  animation: liveModalEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.robot-float {
+  animation: robotFloat 3.4s ease-in-out infinite;
+}
+
+.robot-eye-blink {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: robotEyeBlink 4.4s ease-in-out infinite;
+}
+
+.robot-thinking-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: robotThinkingPulse 1.1s ease-in-out infinite;
+}
+
+.robot-thinking-dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.robot-thinking-dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .typing-dot {
     animation: none;
     opacity: 0.6;
+  }
+  .settings-drawer-panel,
+  .settings-drawer-backdrop,
+  .mic-pulse-ring,
+  .voice-wave-bar,
+  .live-modal-enter,
+  .robot-float,
+  .robot-eye-blink,
+  .robot-thinking-dot {
+    animation: none;
   }
 }

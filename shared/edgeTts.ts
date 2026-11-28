@@ -40,10 +40,62 @@ const CHROMIUM_MAJOR_VERSION = '143';
 const SEC_MS_GEC_VERSION = `2-${CHROMIUM_FULL_VERSION}`;
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
 
-export const EDGE_TTS_VOICES: Record<VoiceGender, string> = {
+export interface EdgeVoiceOption {
+  id: string;
+  name: string;
+  label: string;
+  gender: VoiceGender;
+  locale: 'en-US' | 'en-GB' | 'en-AU';
+}
+
+export const EDGE_VOICE_OPTIONS: readonly EdgeVoiceOption[] = [
+  // Female voices
+  { id: 'en-US-AvaNeural', name: 'Ava', label: 'Nữ (Ava)', gender: 'female', locale: 'en-US' },
+  { id: 'en-US-EmmaNeural', name: 'Emma', label: 'Nữ (Emma)', gender: 'female', locale: 'en-US' },
+  { id: 'en-US-JennyNeural', name: 'Jenny', label: 'Nữ (Jenny)', gender: 'female', locale: 'en-US' },
+  { id: 'en-US-AriaNeural', name: 'Aria', label: 'Nữ (Aria)', gender: 'female', locale: 'en-US' },
+  { id: 'en-US-MichelleNeural', name: 'Michelle', label: 'Nữ (Michelle)', gender: 'female', locale: 'en-US' },
+  { id: 'en-GB-SoniaNeural', name: 'Sonia', label: 'Nữ (Sonia · UK)', gender: 'female', locale: 'en-GB' },
+  { id: 'en-GB-LibbyNeural', name: 'Libby', label: 'Nữ (Libby · UK)', gender: 'female', locale: 'en-GB' },
+  { id: 'en-AU-NatashaNeural', name: 'Natasha', label: 'Nữ (Natasha · AU)', gender: 'female', locale: 'en-AU' },
+  // Male voices
+  { id: 'en-US-AndrewNeural', name: 'Andrew', label: 'Nam (Andrew)', gender: 'male', locale: 'en-US' },
+  { id: 'en-US-BrianNeural', name: 'Brian', label: 'Nam (Brian)', gender: 'male', locale: 'en-US' },
+  { id: 'en-US-GuyNeural', name: 'Guy', label: 'Nam (Guy)', gender: 'male', locale: 'en-US' },
+  { id: 'en-US-ChristopherNeural', name: 'Christopher', label: 'Nam (Christopher)', gender: 'male', locale: 'en-US' },
+  { id: 'en-US-EricNeural', name: 'Eric', label: 'Nam (Eric)', gender: 'male', locale: 'en-US' },
+  { id: 'en-US-SteffanNeural', name: 'Steffan', label: 'Nam (Steffan)', gender: 'male', locale: 'en-US' },
+  { id: 'en-GB-RyanNeural', name: 'Ryan', label: 'Nam (Ryan · UK)', gender: 'male', locale: 'en-GB' },
+  { id: 'en-GB-ThomasNeural', name: 'Thomas', label: 'Nam (Thomas · UK)', gender: 'male', locale: 'en-GB' },
+] as const;
+
+export type EdgeVoiceId = (typeof EDGE_VOICE_OPTIONS)[number]['id'];
+
+export const DEFAULT_EDGE_VOICE_ID: EdgeVoiceId = 'en-US-AvaNeural';
+
+export const EDGE_TTS_VOICES: Record<VoiceGender, EdgeVoiceId> = {
   female: 'en-US-AvaNeural',
   male: 'en-US-AndrewNeural',
 };
+
+const EDGE_VOICE_BY_ID = new Map<string, EdgeVoiceOption>(
+  EDGE_VOICE_OPTIONS.map((v) => [v.id, v])
+);
+
+export function resolveEdgeVoice(
+  rawVoiceId?: unknown,
+  fallbackGender?: VoiceGender
+): EdgeVoiceOption {
+  if (typeof rawVoiceId === 'string') {
+    const trimmed = rawVoiceId.trim();
+    const direct = EDGE_VOICE_BY_ID.get(trimmed);
+    if (direct) return direct;
+    if (trimmed === 'male') return EDGE_VOICE_BY_ID.get(EDGE_TTS_VOICES.male)!;
+    if (trimmed === 'female') return EDGE_VOICE_BY_ID.get(EDGE_TTS_VOICES.female)!;
+  }
+  const fallbackId = fallbackGender === 'male' ? EDGE_TTS_VOICES.male : EDGE_TTS_VOICES.female;
+  return EDGE_VOICE_BY_ID.get(fallbackId)!;
+}
 
 const WIN_EPOCH = 11644473600n;
 const TICKS_PER_SECOND = 10_000_000n;
@@ -454,24 +506,26 @@ export function buildEdgeTtsConnection(scheme: 'wss' | 'https' = 'wss'): {
 export async function synthesizeWithEdgeTts(
   options: {
     text: string;
+    voiceId?: string;
     voiceGender?: VoiceGender;
   },
   connect: EdgeSocketConnector,
   scheme: 'wss' | 'https' = 'wss'
 ): Promise<EdgeSpeechResult> {
-  const gender: VoiceGender = options.voiceGender === 'male' ? 'male' : 'female';
+  const voice = resolveEdgeVoice(options.voiceId, options.voiceGender);
   const cleanText = options.text.trim();
   if (!cleanText) {
     throw new Error('EMPTY_TTS_TEXT');
   }
 
-  const cacheKey = `${gender}:${cleanText.toLowerCase()}`;
+  const cacheKey = `${voice.id}:${cleanText.toLowerCase()}`;
   const cached = getCachedEdgeTts(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const voiceName = EDGE_TTS_VOICES[gender];
+  const voiceName = voice.id;
+  const voiceLocale = voice.locale;
   const escaped = escapeXmlForSsml(cleanText);
   if (!escaped) {
     throw new Error('EMPTY_TTS_TEXT');
@@ -612,7 +666,7 @@ export async function synthesizeWithEdgeTts(
           `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},"outputFormat":"${OUTPUT_FORMAT}"}}}}\r\n`;
 
         const ssml =
-          `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
+          `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${voiceLocale}'>` +
           `<voice name='${voiceName}'>` +
           `<prosody pitch='+0Hz' rate='+0%' volume='+0%'>${escaped}</prosody>` +
           `</voice></speak>`;

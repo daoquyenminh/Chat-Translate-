@@ -17,6 +17,15 @@ import {
   setCachedTranslation,
 } from './shared/llmRouter';
 import {
+  PracticeTurnMessage,
+  routePracticeTurn,
+} from './shared/practiceTalk';
+import {
+  normalizeAudioMime,
+  routeSpeechToText,
+  transcribeWithGeminiAudio,
+} from './shared/sttRouter';
+import {
   OpenedTranslateStream,
   formatGeminiUserError,
   generateStudyAnalysis,
@@ -105,7 +114,17 @@ interface NormalizedStudyPayload {
 interface TtsBody {
   text?: string;
   mode?: TranslationMode;
+  voiceId?: string;
   voiceGender?: VoiceGender;
+}
+
+interface SttBody {
+  audioBase64?: string;
+  mimeType?: string;
+}
+
+interface PracticeTurnBody {
+  history?: PracticeTurnMessage[];
 }
 
 // Cloudflare edge PoPs where Google Gemini API returns HTTP 400 (User location is not supported)
@@ -322,8 +341,8 @@ const workerEdgeSocketConnector: EdgeSocketConnector = async ({ url, headers }) 
 
 async function forwardToUsProxy(
   env: CloudflareEnv,
-  pathname: '/api/translate' | '/api/study',
-  payload: NormalizedTranslatePayload | NormalizedStudyPayload
+  pathname: '/api/translate' | '/api/study' | '/api/stt',
+  payload: NormalizedTranslatePayload | NormalizedStudyPayload | SttBody
 ): Promise<Response | null> {
   if (!env.GEMINI_PROXY) return null;
   const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
@@ -650,6 +669,7 @@ async function handleTts(request: CloudflareRequest): Promise<Response> {
   }
 
   const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
+  const voiceId = typeof body.voiceId === 'string' ? body.voiceId : undefined;
   const voiceGender: VoiceGender = body.voiceGender === 'male' ? 'male' : 'female';
 
   if (!rawText) {
@@ -662,7 +682,7 @@ async function handleTts(request: CloudflareRequest): Promise<Response> {
 
   try {
     const speech = await synthesizeWithEdgeTts(
-      { text: rawText, voiceGender },
+      { text: rawText, voiceId, voiceGender },
       workerEdgeSocketConnector,
       'https'
     );
@@ -671,6 +691,127 @@ async function handleTts(request: CloudflareRequest): Promise<Response> {
     });
   } catch {
     return jsonResponse({ error: 'Không thể tạo giọng đọc lúc này.' }, 502);
+  }
+}
+
+async function handleStt(
+  request: CloudflareRequest,
+  env: CloudflareEnv
+): Promise<Response> {
+  let body: SttBody;
+  try {
+    body = (await request.json()) as SttBody;
+  } catch {
+    return jsonResponse({ error: 'Dữ liệu gửi lên không hợp lệ.' }, 400);
+  }
+
+  const audioBase64 = typeof body.audioBase64 === 'string' ? body.audioBase64.trim() : '';
+  const mimeType = typeof body.mimeType === 'string' ? body.mimeType : undefined;
+
+  if (!audioBase64) {
+    return jsonResponse({ error: 'Thiếu dữ liệu âm thanh để nhận diện.' }, 400);
+  }
+
+  if (audioBase64.length > 8 * 1024 * 1024) {
+    return jsonResponse({ error: 'Đoạn ghi âm quá dài. Vui lòng nói ngắn hơn.' }, 413);
+  }
+
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+  const preferProxy = Boolean(colo && RESTRICTED_COLOS.has(colo));
+
+  try {
+    const baseConfig = await buildRouterConfig(env, {
+      preferGeminiProxy: preferProxy,
+      allowProxyFallback: Boolean(env.GEMINI_PROXY),
+    });
+
+    const runGeminiSttViaProxy = env.GEMINI_PROXY
+      ? async (): Promise<string | null> => {
+          const proxyRes = await forwardToUsProxy(env, '/api/stt', { audioBase64, mimeType });
+          if (!proxyRes || !proxyRes.ok) return null;
+          const data = (await proxyRes.json()) as { text?: string };
+          return typeof data.text === 'string' ? data.text : '';
+        }
+      : undefined;
+
+    const result = await routeSpeechToText(
+      { audioBase64, mimeType },
+      { ...baseConfig, runGeminiSttViaProxy }
+    );
+
+    return jsonResponse(
+      { text: result.text },
+      200,
+      {
+        'X-Cydia-Provider': result.provider,
+        'Cache-Control': 'no-store',
+      }
+    );
+  } catch (err: unknown) {
+    if (err instanceof ProviderRouteError) {
+      return jsonResponse(
+        { error: err.message },
+        err.status,
+        err.retryAfterSeconds ? { 'Retry-After': String(err.retryAfterSeconds) } : undefined
+      );
+    }
+    return jsonResponse({ error: 'Không thể nhận diện giọng nói lúc này.' }, 502);
+  }
+}
+
+async function handlePracticeTurn(
+  request: CloudflareRequest,
+  env: CloudflareEnv
+): Promise<Response> {
+  let body: PracticeTurnBody;
+  try {
+    body = (await request.json()) as PracticeTurnBody;
+  } catch {
+    return jsonResponse({ error: 'Dữ liệu gửi lên không hợp lệ.' }, 400);
+  }
+
+  const rawHistory = Array.isArray(body.history) ? body.history : [];
+  const history: PracticeTurnMessage[] = rawHistory
+    .filter(
+      (m): m is PracticeTurnMessage =>
+        Boolean(m) &&
+        (m.role === 'user' || m.role === 'assistant') &&
+        typeof m.text === 'string' &&
+        m.text.trim().length > 0
+    )
+    .slice(-14)
+    .map((m) => ({
+      role: m.role,
+      text: sanitizeInputText(m.text).slice(0, 1000),
+    }));
+
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+  const preferProxy = Boolean(colo && RESTRICTED_COLOS.has(colo));
+
+  try {
+    const config = await buildRouterConfig(env, {
+      preferGeminiProxy: preferProxy,
+      allowProxyFallback: Boolean(env.GEMINI_PROXY),
+    });
+
+    const result = await routePracticeTurn(history, config);
+    return jsonResponse(
+      { reply: result.reply },
+      200,
+      {
+        'X-Cydia-Provider': result.provider,
+        'Cache-Control': 'no-store',
+      }
+    );
+  } catch (err: unknown) {
+    if (err instanceof ProviderRouteError) {
+      return jsonResponse(
+        { error: err.message },
+        err.status,
+        err.retryAfterSeconds ? { 'Retry-After': String(err.retryAfterSeconds) } : undefined
+      );
+    }
+    return jsonResponse({ error: 'Không thể kết nối robot luyện nói lúc này.' }, 502);
   }
 }
 
@@ -742,6 +883,25 @@ export class GeminiRegionProxy {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/stt') {
+      try {
+        const payload = (await request.json()) as SttBody;
+        const rawBase64 = typeof payload.audioBase64 === 'string'
+          ? payload.audioBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '')
+          : '';
+        if (!rawBase64) {
+          return jsonResponse({ error: 'Thiếu dữ liệu âm thanh.' }, 400);
+        }
+        const { mime } = normalizeAudioMime(payload.mimeType);
+        const ai = getOrCreateGeminiClient(geminiKeys[0]);
+        const text = await transcribeWithGeminiAudio(ai, rawBase64, mime);
+        return jsonResponse({ text }, 200, { 'Cache-Control': 'no-store' });
+      } catch (err: unknown) {
+        const mapped = formatGeminiUserError(inspectGeminiError(err), 'cloudflare');
+        return jsonResponse({ error: mapped.error }, mapped.status);
+      }
+    }
+
     return new Response(null, { status: 404 });
   }
 }
@@ -774,6 +934,14 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/tts') {
       return handleTts(request as CloudflareRequest);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/stt') {
+      return handleStt(request as CloudflareRequest, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/practice-turn') {
+      return handlePracticeTurn(request as CloudflareRequest, env);
     }
 
     const assetResponse = await env.ASSETS.fetch(request);

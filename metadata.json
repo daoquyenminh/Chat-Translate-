@@ -1,6 +1,6 @@
 {
   "name": "Cydia Translate",
   "description": "Chatbox dịch thuật cá nhân sang tiếng Anh nhắn tin tự nhiên như người bản xứ, copy nhanh và tự động lưu log.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

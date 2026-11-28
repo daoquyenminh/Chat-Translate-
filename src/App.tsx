@@ -1,19 +1,30 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Bookmark, Settings } from 'lucide-react';
 import {
+  ChatFontSize,
   ChatMessage,
   ChatTheme,
+  EdgeVoiceId,
   SavedLesson,
   SpeechHighlightRange,
   SpeechWordTiming,
   StudyAnalysis,
   ThemePreset,
   TranslationMode,
-  VoiceGender,
 } from './types';
+import { resolveEdgeVoice } from '../shared/edgeTts';
 import { INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
+import {
+  DEFAULT_FONT_SIZE_PX,
+  DEFAULT_VOICE_SILENCE_SEC,
+  MAX_FONT_SIZE,
+  MAX_VOICE_SILENCE_SEC,
+  MIN_FONT_SIZE,
+  MIN_VOICE_SILENCE_SEC,
+  ThemeSettingsModal,
+} from './components/ThemeSettingsModal';
 import { copyTextToClipboard } from './utils/formatters';
 import {
   createPlayableAudioUrl,
@@ -29,10 +40,6 @@ import {
   persistThemeSetting,
 } from './utils/color';
 
-const ThemeSettingsModal = lazy(() =>
-  import('./components/ThemeSettingsModal').then((m) => ({ default: m.ThemeSettingsModal }))
-);
-
 const StudyModal = lazy(() =>
   import('./components/StudyModal').then((m) => ({ default: m.StudyModal }))
 );
@@ -41,14 +48,24 @@ const SavedLessonsModal = lazy(() =>
   import('./components/SavedLessonsModal').then((m) => ({ default: m.SavedLessonsModal }))
 );
 
+const LiveTalkModal = lazy(() =>
+  import('./components/LiveTalkModal').then((m) => ({ default: m.LiveTalkModal }))
+);
+
 const DEFAULT_MODE: TranslationMode = 'formal';
+const DEFAULT_FONT_SIZE: ChatFontSize = DEFAULT_FONT_SIZE_PX;
 const DEFAULT_SPEECH_RATE = 1;
+const SETTINGS_PREVIEW_SPEECH_KEY = 'settings-voice-preview';
+const SETTINGS_PREVIEW_TEXT = 'Hello! Here is how your English voice sounds.';
 const MODE_STORAGE_KEY = 'cydia_translate_mode_v1';
 const MODE_COOKIE_KEY = 'cydia_mode_v1';
+const FONT_SIZE_STORAGE_KEY = 'cydia_translate_font_size_v1';
 const VOICE_STORAGE_KEY = 'cydia_translate_voice_v1';
 const VOICE_COOKIE_KEY = 'cydia_voice_v1';
 const SPEECH_RATE_STORAGE_KEY = 'cydia_translate_speech_rate_v1';
 const SPEECH_RATE_COOKIE_KEY = 'cydia_speech_rate_v1';
+const VOICE_SILENCE_STORAGE_KEY = 'cydia_translate_voice_silence_v1';
+const VOICE_SILENCE_COOKIE_KEY = 'cydia_voice_silence_v1';
 const MESSAGES_STORAGE_KEY = 'cydia_translate_messages_v2';
 const MESSAGES_DAY_STORAGE_KEY = 'cydia_translate_messages_day_v1';
 const SAVED_LESSONS_STORAGE_KEY = 'cydia_translate_saved_lessons_v1';
@@ -117,26 +134,26 @@ function loadSavedMode(): TranslationMode {
   return DEFAULT_MODE;
 }
 
-function normalizeVoiceGender(raw: unknown): VoiceGender {
-  return raw === 'male' ? 'male' : 'female';
+function normalizeVoiceId(raw: unknown): EdgeVoiceId {
+  return resolveEdgeVoice(raw).id;
 }
 
-function readVoiceCookie(): VoiceGender | null {
+function readVoiceCookie(): EdgeVoiceId | null {
   try {
     const match = document.cookie
       .split('; ')
       .find((row) => row.startsWith(`${VOICE_COOKIE_KEY}=`));
     if (!match) return null;
     const decoded = decodeURIComponent(match.slice(VOICE_COOKIE_KEY.length + 1)).trim();
-    if (decoded === 'male' || decoded === 'female') return decoded;
-    return null;
+    if (!decoded) return null;
+    return normalizeVoiceId(decoded);
   } catch {
     return null;
   }
 }
 
-function persistVoiceSetting(nextVoice: VoiceGender): void {
-  const safe = normalizeVoiceGender(nextVoice);
+function persistVoiceSetting(nextVoiceId: EdgeVoiceId): void {
+  const safe = normalizeVoiceId(nextVoiceId);
   try {
     window.localStorage.setItem(VOICE_STORAGE_KEY, JSON.stringify(safe));
   } catch {
@@ -149,16 +166,18 @@ function persistVoiceSetting(nextVoice: VoiceGender): void {
   }
 }
 
-function loadSavedVoiceGender(): VoiceGender {
+function loadSavedVoiceId(): EdgeVoiceId {
   try {
     const raw = window.localStorage.getItem(VOICE_STORAGE_KEY);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        if (parsed === 'male' || parsed === 'female') return parsed;
+        if (typeof parsed === 'string' && parsed.trim()) {
+          return normalizeVoiceId(parsed);
+        }
       } catch {
         const trimmed = raw.trim();
-        if (trimmed === 'male' || trimmed === 'female') return trimmed;
+        if (trimmed) return normalizeVoiceId(trimmed);
       }
     }
   } catch {
@@ -169,7 +188,7 @@ function loadSavedVoiceGender(): VoiceGender {
     persistVoiceSetting(fromCookie);
     return fromCookie;
   }
-  return 'female';
+  return resolveEdgeVoice().id;
 }
 
 function getLocalDateKey(date: Date = new Date()): string {
@@ -219,7 +238,7 @@ function normalizeSpeechRate(raw: unknown): number {
   const num = typeof raw === 'number' ? raw : Number(raw);
   if (!Number.isFinite(num)) return DEFAULT_SPEECH_RATE;
   const clamped = Math.min(1.5, Math.max(0.5, num));
-  return Math.round(clamped * 20) / 20;
+  return Math.round(clamped * 100) / 100;
 }
 
 function readSpeechRateCookie(): number | null {
@@ -275,12 +294,110 @@ function loadSavedSpeechRate(): number {
   return DEFAULT_SPEECH_RATE;
 }
 
+function normalizeFontSize(raw: unknown): ChatFontSize {
+  if (raw === 'sm') return 13.5;
+  if (raw === 'md') return DEFAULT_FONT_SIZE;
+  if (raw === 'lg') return 17.5;
+  const num = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(num)) return DEFAULT_FONT_SIZE;
+  const clamped = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, num));
+  return Math.round(clamped * 10) / 10;
+}
+
+function applyFontSizeCssVar(size: ChatFontSize): void {
+  try {
+    const safe = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, size));
+    document.documentElement.style.setProperty('--cydia-chat-font-size', `${safe.toFixed(2)}px`);
+  } catch {
+    // Ignore DOM access errors
+  }
+}
+
+function loadSavedFontSize(): ChatFontSize {
+  try {
+    const raw = window.localStorage.getItem(FONT_SIZE_STORAGE_KEY);
+    if (!raw) return DEFAULT_FONT_SIZE;
+    try {
+      return normalizeFontSize(JSON.parse(raw));
+    } catch {
+      return normalizeFontSize(raw.trim());
+    }
+  } catch {
+    return DEFAULT_FONT_SIZE;
+  }
+}
+
+function normalizeVoiceSilenceSeconds(raw: unknown): number {
+  const num = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(num)) return DEFAULT_VOICE_SILENCE_SEC;
+  const clamped = Math.min(MAX_VOICE_SILENCE_SEC, Math.max(MIN_VOICE_SILENCE_SEC, num));
+  return Math.round(clamped * 10) / 10;
+}
+
+function readVoiceSilenceCookie(): number | null {
+  try {
+    const match = document.cookie
+      .split('; ')
+      .find((row) => row.startsWith(`${VOICE_SILENCE_COOKIE_KEY}=`));
+    if (!match) return null;
+    const decoded = Number(
+      decodeURIComponent(match.slice(VOICE_SILENCE_COOKIE_KEY.length + 1)).trim()
+    );
+    if (Number.isFinite(decoded)) return normalizeVoiceSilenceSeconds(decoded);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistVoiceSilenceSetting(nextSeconds: number): void {
+  const safe = normalizeVoiceSilenceSeconds(nextSeconds);
+  try {
+    window.localStorage.setItem(VOICE_SILENCE_STORAGE_KEY, JSON.stringify(safe));
+  } catch {
+    // Ignore storage quota errors
+  }
+  try {
+    document.cookie = `${VOICE_SILENCE_COOKIE_KEY}=${encodeURIComponent(String(safe))}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    // Ignore cookie errors
+  }
+}
+
+function loadSavedVoiceSilenceSeconds(): number {
+  try {
+    const raw = window.localStorage.getItem(VOICE_SILENCE_STORAGE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+          return normalizeVoiceSilenceSeconds(parsed);
+        }
+      } catch {
+        const num = Number(raw.trim());
+        if (Number.isFinite(num)) return normalizeVoiceSilenceSeconds(num);
+      }
+    }
+  } catch {
+    // Fall through to cookie backup
+  }
+  const fromCookie = readVoiceSilenceCookie();
+  if (fromCookie !== null) {
+    persistVoiceSilenceSetting(fromCookie);
+    return fromCookie;
+  }
+  return DEFAULT_VOICE_SILENCE_SEC;
+}
+
 purgeExpiredMessagesBeforeHydrate();
 const INITIAL_SAVED_MODE = loadSavedMode();
-const INITIAL_SAVED_VOICE = loadSavedVoiceGender();
+const INITIAL_SAVED_FONT_SIZE = loadSavedFontSize();
+const INITIAL_SAVED_VOICE = loadSavedVoiceId();
 const INITIAL_SAVED_SPEECH_RATE = loadSavedSpeechRate();
+const INITIAL_SAVED_VOICE_SILENCE = loadSavedVoiceSilenceSeconds();
 const INITIAL_SAVED_THEME = loadSavedTheme();
 applyThemeCssVars(INITIAL_SAVED_THEME);
+applyFontSizeCssVar(INITIAL_SAVED_FONT_SIZE);
 
 function CydiaStarMark() {
   return (
@@ -302,13 +419,21 @@ export default function App() {
     MODE_STORAGE_KEY,
     INITIAL_SAVED_MODE
   );
-  const [storedVoiceGender, setStoredVoiceGender] = useLocalStorage<VoiceGender>(
+  const [storedFontSize, setStoredFontSize] = useLocalStorage<ChatFontSize>(
+    FONT_SIZE_STORAGE_KEY,
+    INITIAL_SAVED_FONT_SIZE
+  );
+  const [storedVoiceId, setStoredVoiceId] = useLocalStorage<EdgeVoiceId>(
     VOICE_STORAGE_KEY,
     INITIAL_SAVED_VOICE
   );
   const [storedSpeechRate, setStoredSpeechRate] = useLocalStorage<number>(
     SPEECH_RATE_STORAGE_KEY,
     INITIAL_SAVED_SPEECH_RATE
+  );
+  const [storedVoiceSilence, setStoredVoiceSilence] = useLocalStorage<number>(
+    VOICE_SILENCE_STORAGE_KEY,
+    INITIAL_SAVED_VOICE_SILENCE
   );
   const [storedTheme, setStoredTheme] = useLocalStorage<ChatTheme>(
     THEME_STORAGE_KEY,
@@ -331,8 +456,12 @@ export default function App() {
   const [todayKey, setTodayKey] = useState<string>(() => getLocalDateKey());
 
   const mode = normalizeTranslationMode(storedMode);
-  const voiceGender = normalizeVoiceGender(storedVoiceGender);
+  const fontSize = normalizeFontSize(storedFontSize);
+  const activeVoice = useMemo(() => resolveEdgeVoice(storedVoiceId), [storedVoiceId]);
+  const voiceId = activeVoice.id;
+  const voiceGender = activeVoice.gender;
   const speechRate = normalizeSpeechRate(storedSpeechRate);
+  const voiceSilenceSeconds = normalizeVoiceSilenceSeconds(storedVoiceSilence);
   const theme = useMemo(() => normalizeTheme(storedTheme), [storedTheme]);
 
   const handleModeChange = useCallback(
@@ -342,6 +471,28 @@ export default function App() {
       setStoredMode(safe);
     },
     [setStoredMode]
+  );
+
+  const handleFontSizeLiveChange = useCallback((nextSize: ChatFontSize) => {
+    applyFontSizeCssVar(nextSize);
+  }, []);
+
+  const handleFontSizeCommit = useCallback(
+    (nextSize: ChatFontSize) => {
+      const safe = normalizeFontSize(nextSize);
+      applyFontSizeCssVar(safe);
+      setStoredFontSize(safe);
+    },
+    [setStoredFontSize]
+  );
+
+  const handleVoiceSilenceCommit = useCallback(
+    (nextSeconds: number) => {
+      const safe = normalizeVoiceSilenceSeconds(nextSeconds);
+      persistVoiceSilenceSetting(safe);
+      setStoredVoiceSilence(safe);
+    },
+    [setStoredVoiceSilence]
   );
 
   const handleThemeChange = useCallback(
@@ -381,6 +532,7 @@ export default function App() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [showThemeSettings, setShowThemeSettings] = useState(false);
   const [showSavedLessons, setShowSavedLessons] = useState(false);
+  const [showLiveTalk, setShowLiveTalk] = useState(false);
 
   const [studyView, setStudyView] = useState<ActiveStudyView | null>(null);
   const [studyLoading, setStudyLoading] = useState(false);
@@ -496,8 +648,8 @@ export default function App() {
   }, [setMessages]);
 
   useEffect(() => {
-    persistVoiceSetting(voiceGender);
-  }, [voiceGender]);
+    persistVoiceSetting(voiceId);
+  }, [voiceId]);
 
   useEffect(() => {
     applyThemeCssVars(theme);
@@ -1167,17 +1319,26 @@ export default function App() {
     setSpeechHighlight(null);
   }, [stopSpeechSyncLoop]);
 
-  const handleVoiceGenderChange = useCallback(
-    (nextVoice: VoiceGender) => {
-      const safe = normalizeVoiceGender(nextVoice);
+  const handleVoiceIdChange = useCallback(
+    (nextVoiceId: EdgeVoiceId) => {
+      const safe = normalizeVoiceId(nextVoiceId);
       stopSpeech();
       persistVoiceSetting(safe);
-      setStoredVoiceGender(safe);
+      setStoredVoiceId(safe);
     },
-    [setStoredVoiceGender, stopSpeech]
+    [setStoredVoiceId, stopSpeech]
   );
 
-  const handleSpeechRateChange = useCallback(
+  const handleSpeechRateLiveChange = useCallback((nextRate: number) => {
+    if (!Number.isFinite(nextRate)) return;
+    const clamped = Math.min(1.5, Math.max(0.5, nextRate));
+    if (audioRef.current) {
+      audioRef.current.defaultPlaybackRate = clamped;
+      audioRef.current.playbackRate = clamped;
+    }
+  }, []);
+
+  const handleSpeechRateCommit = useCallback(
     (nextRate: number) => {
       const safe = normalizeSpeechRate(nextRate);
       persistSpeechRateSetting(safe);
@@ -1228,7 +1389,7 @@ export default function App() {
       }
       const audio = audioRef.current;
 
-      const cacheKey = `${voiceGender}:${cleanText}`;
+      const cacheKey = `${voiceId}:${cleanText}`;
       const cachedEntry = ttsCacheRef.current.get(cacheKey);
 
       const playWithHighlight = async (url: string, timings: SpeechWordTiming[]) => {
@@ -1332,6 +1493,7 @@ export default function App() {
           signal: controller.signal,
           body: JSON.stringify({
             text: cleanText,
+            voiceId,
             voiceGender,
           }),
         });
@@ -1392,7 +1554,7 @@ export default function App() {
         }
       }
     },
-    [loadingSpeechKey, speakingKey, speechRate, stopSpeech, stopSpeechSyncLoop, voiceGender]
+    [loadingSpeechKey, speakingKey, speechRate, stopSpeech, stopSpeechSyncLoop, voiceGender, voiceId]
   );
 
   const handleClearChat = () => {
@@ -1406,72 +1568,201 @@ export default function App() {
     }
   };
 
+  const handleOpenLiveTalk = useCallback(() => {
+    stopSpeech();
+    setShowLiveTalk(true);
+  }, [stopSpeech]);
+
+  const handleCloseLiveTalk = useCallback(
+    (turns: Array<{ role: 'user' | 'assistant'; text: string; createdAt: string }>) => {
+      setShowLiveTalk(false);
+      const validTurns = turns.filter((t) => t.text && t.text.trim().length > 0);
+      if (validTurns.length === 0) return;
+
+      const baseId = Date.now();
+      let lastUserText = '';
+      const appended: ChatMessage[] = validTurns.map((turn, idx) => {
+        const cleanText = turn.text.trim();
+        if (turn.role === 'user') {
+          lastUserText = cleanText;
+          return {
+            id: `live-u-${baseId}-${idx}`,
+            role: 'user',
+            text: cleanText,
+            createdAt: turn.createdAt,
+            mode,
+          };
+        }
+        return {
+          id: `live-a-${baseId}-${idx}`,
+          role: 'assistant',
+          text: cleanText,
+          sourceText: lastUserText || cleanText,
+          createdAt: turn.createdAt,
+          mode,
+        };
+      });
+
+      setMessages((prev) => [...prev, ...appended]);
+      try {
+        window.localStorage.setItem(MESSAGES_DAY_STORAGE_KEY, getLocalDateKey());
+      } catch {
+        // Ignore storage errors
+      }
+    },
+    [mode, setMessages]
+  );
+
+  const handleCloseSettings = useCallback(() => {
+    if (
+      speakingKey === SETTINGS_PREVIEW_SPEECH_KEY ||
+      loadingSpeechKey === SETTINGS_PREVIEW_SPEECH_KEY
+    ) {
+      stopSpeech();
+    }
+    setShowThemeSettings(false);
+  }, [loadingSpeechKey, speakingKey, stopSpeech]);
+
+  const settingsProps = {
+    isOpen: showThemeSettings,
+    mode,
+    fontSize,
+    voiceId,
+    speechRate,
+    voiceSilenceSeconds,
+    isPreviewSpeaking: speakingKey === SETTINGS_PREVIEW_SPEECH_KEY,
+    isPreviewLoading: loadingSpeechKey === SETTINGS_PREVIEW_SPEECH_KEY,
+    theme,
+    savedThemes,
+    onModeChange: handleModeChange,
+    onFontSizeLiveChange: handleFontSizeLiveChange,
+    onFontSizeCommit: handleFontSizeCommit,
+    onVoiceIdChange: handleVoiceIdChange,
+    onSpeechRateLiveChange: handleSpeechRateLiveChange,
+    onSpeechRateCommit: handleSpeechRateCommit,
+    onVoiceSilenceCommit: handleVoiceSilenceCommit,
+    onPreviewVoice: () =>
+      void handleSpeak(SETTINGS_PREVIEW_SPEECH_KEY, SETTINGS_PREVIEW_TEXT, mode),
+    onThemeChange: handleThemeChange,
+    onSaveCustomTheme: handleSaveCustomTheme,
+    onDeleteCustomTheme: handleDeleteCustomTheme,
+    onClearChat: handleClearChat,
+    onClose: handleCloseSettings,
+  };
+
   return (
-    <div className="fixed inset-x-0 top-[var(--app-offset-top)] h-[var(--app-vh)] w-full bg-white flex flex-col overflow-hidden">
-      <header className="bg-white border-b border-[#EFEFF1] pt-[env(safe-area-inset-top)] shrink-0 z-10">
-        <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[60px] sm:h-[64px]">
-          <div className="flex items-center gap-3 min-w-0">
-            <CydiaStarMark />
-            <h1 className="min-w-0 flex flex-col sm:flex-row sm:items-baseline sm:gap-1.5 leading-tight">
-              <span className="text-[16px] sm:text-[17px] font-semibold tracking-tight text-[#111111] truncate">
-                Cydia Chatbot
-              </span>
-              <span className="hidden sm:inline text-[#A1A1AA] font-normal" aria-hidden="true">
-                –
-              </span>
-              <span className="text-[11.5px] sm:text-[14px] font-medium text-[#71717A] truncate">
-                Translate &amp; Learn English
-              </span>
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowSavedLessons(true)}
-              aria-label="Bài học đã lưu"
-              title="Bài học đã lưu"
-              className="inline-flex items-center justify-center gap-1.5 min-w-[40px] h-10 px-2.5 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
-            >
-              <Bookmark className="w-[19px] h-[19px]" strokeWidth={1.9} />
-              {savedLessons.length > 0 && (
-                <span className="text-[13px] font-medium tabular-nums text-[#111111]">
-                  {savedLessons.length}
+    <div className="fixed inset-x-0 top-[var(--app-offset-top)] h-[var(--app-vh)] w-full bg-white flex overflow-hidden">
+      {/* Main chat column — pushes left to 2/3 width on desktop when Settings panel opens */}
+      <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+        <header className="bg-white border-b border-[#EFEFF1] pt-[env(safe-area-inset-top)] shrink-0 z-10">
+          <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[60px] sm:h-[64px]">
+            <div className="flex items-center gap-3 min-w-0">
+              <CydiaStarMark />
+              <h1 className="min-w-0 flex flex-col sm:flex-row sm:items-baseline sm:gap-1.5 leading-tight">
+                <span className="text-[16px] sm:text-[17px] font-semibold tracking-tight text-[#111111] truncate">
+                  Cydia Chatbot
                 </span>
-              )}
-            </button>
+                <span className="hidden sm:inline text-[#A1A1AA] font-normal" aria-hidden="true">
+                  –
+                </span>
+                <span className="text-[11.5px] sm:text-[14px] font-medium text-[#71717A] truncate">
+                  Translate &amp; Learn English
+                </span>
+              </h1>
+            </div>
 
-            <button
-              type="button"
-              onClick={() => setShowThemeSettings(true)}
-              aria-label="Cài đặt"
-              title="Cài đặt"
-              className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
-            >
-              <Settings className="w-5 h-5" strokeWidth={1.9} />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowSavedLessons(true)}
+                aria-label="Bài học đã lưu"
+                title="Bài học đã lưu"
+                className="inline-flex items-center justify-center gap-1.5 min-w-[40px] h-10 px-2.5 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
+              >
+                <Bookmark className="w-[19px] h-[19px]" strokeWidth={1.9} />
+                {savedLessons.length > 0 && (
+                  <span className="text-[13px] font-medium tabular-nums text-[#111111]">
+                    {savedLessons.length}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (showThemeSettings) {
+                    handleCloseSettings();
+                  } else {
+                    setShowThemeSettings(true);
+                  }
+                }}
+                aria-label="Cài đặt"
+                aria-expanded={showThemeSettings}
+                title="Cài đặt"
+                className={`flex items-center justify-center w-10 h-10 rounded-full transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111] ${
+                  showThemeSettings
+                    ? 'text-[#111111] bg-[#F4F4F5]'
+                    : 'text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5]'
+                }`}
+              >
+                <Settings className="w-5 h-5" strokeWidth={1.9} />
+              </button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <ChatPanel
-        messages={visibleMessages}
-        isLoading={isLoading}
-        streamingMessageId={streamingMessageId}
-        translatingViId={translatingViId}
-        copiedMessageId={copiedMessageId}
-        speakingKey={speakingKey}
-        loadingSpeechKey={loadingSpeechKey}
-        speechHighlight={speechHighlight}
-        voiceGender={voiceGender}
-        onCopyMessage={triggerCopy}
-        onSend={handleSend}
-        onStop={handleStop}
-        onRegenerate={handleRegenerate}
-        onTranslateToVi={handleTranslateToVi}
-        onOpenStudy={handleOpenStudy}
-        onSpeak={(key, text, msgMode) => void handleSpeak(key, text, msgMode)}
-      />
+        <ChatPanel
+          messages={visibleMessages}
+          isLoading={isLoading}
+          streamingMessageId={streamingMessageId}
+          translatingViId={translatingViId}
+          copiedMessageId={copiedMessageId}
+          speakingKey={speakingKey}
+          loadingSpeechKey={loadingSpeechKey}
+          speechHighlight={speechHighlight}
+          voiceGender={voiceGender}
+          voiceSilenceSeconds={voiceSilenceSeconds}
+          onCopyMessage={triggerCopy}
+          onSend={handleSend}
+          onStop={handleStop}
+          onRegenerate={handleRegenerate}
+          onTranslateToVi={handleTranslateToVi}
+          onOpenStudy={handleOpenStudy}
+          onSpeak={(key, text, msgMode) => void handleSpeak(key, text, msgMode)}
+          onBeforeStartVoice={stopSpeech}
+          onOpenLiveTalk={handleOpenLiveTalk}
+        />
+      </div>
+
+      {/* Desktop right-side push Settings panel (1/3 screen width) */}
+      <div
+        aria-hidden={!showThemeSettings}
+        className={`hidden lg:block shrink-0 h-full overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+          showThemeSettings ? 'w-[clamp(380px,33.333vw,540px)]' : 'w-0 pointer-events-none'
+        }`}
+      >
+        <div className="w-[clamp(380px,33.333vw,540px)] h-full">
+          <ThemeSettingsModal variant="inline" {...settingsProps} />
+        </div>
+      </div>
+
+      {/* Mobile & tablet slide-over overlay drawer */}
+      <div className="lg:hidden">
+        <ThemeSettingsModal variant="overlay" {...settingsProps} />
+      </div>
+
+      {showLiveTalk && (
+        <Suspense fallback={null}>
+          <LiveTalkModal
+            isOpen={showLiveTalk}
+            voiceId={voiceId}
+            voiceGender={voiceGender}
+            speechRate={speechRate}
+            voiceSilenceSeconds={voiceSilenceSeconds}
+            onCloseWithTranscript={handleCloseLiveTalk}
+          />
+        </Suspense>
+      )}
 
       {studyView && (
         <Suspense fallback={null}>
@@ -1503,27 +1794,6 @@ export default function App() {
             onSelectLesson={handleOpenSavedLesson}
             onDeleteLesson={handleDeleteSavedLesson}
             onClose={() => setShowSavedLessons(false)}
-          />
-        </Suspense>
-      )}
-
-      {showThemeSettings && (
-        <Suspense fallback={null}>
-          <ThemeSettingsModal
-            isOpen={showThemeSettings}
-            mode={mode}
-            voiceGender={voiceGender}
-            speechRate={speechRate}
-            theme={theme}
-            savedThemes={savedThemes}
-            onModeChange={handleModeChange}
-            onVoiceGenderChange={handleVoiceGenderChange}
-            onSpeechRateChange={handleSpeechRateChange}
-            onThemeChange={handleThemeChange}
-            onSaveCustomTheme={handleSaveCustomTheme}
-            onDeleteCustomTheme={handleDeleteCustomTheme}
-            onClearChat={handleClearChat}
-            onClose={() => setShowThemeSettings(false)}
           />
         </Suspense>
       )}
