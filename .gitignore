@@ -7,4 +7,3 @@ coverage/
 .env*
 !.env.example
 public/assets/aistudio/*
-!public/assets/aistudio/Logo_robot_meme_2x__1__220cb57d.png

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#4BB52E" />
+
+  <!-- Antenna -->
+  <path d="M256 158 C252 120 264 96 278 86" fill="none" stroke="#111111" stroke-width="14" stroke-linecap="round" />
+  <circle cx="286" cy="82" r="24" fill="#FF5A52" stroke="#111111" stroke-width="14" />
+
+  <!-- Sweat drop -->
+  <path d="M424 128 C424 128 442 158 442 174 C442 187 434 196 424 196 C414 196 406 187 406 174 C406 158 424 128 424 128 Z" fill="#5BB8F6" stroke="#111111" stroke-width="12" stroke-linejoin="round" />
+
+  <!-- Neck & Shoulders -->
+  <rect x="218" y="382" width="76" height="52" rx="8" fill="#BDBDBD" stroke="#111111" stroke-width="14" />
+  <path d="M126 512 C126 436 182 414 256 414 C330 414 386 436 386 512 Z" fill="#F2F2F2" stroke="#111111" stroke-width="14" stroke-linejoin="round" />
+
+  <!-- Ears -->
+  <rect x="86" y="232" width="44" height="72" rx="14" fill="#BDBDBD" stroke="#111111" stroke-width="14" />
+  <rect x="382" y="232" width="44" height="72" rx="14" fill="#BDBDBD" stroke="#111111" stroke-width="14" />
+
+  <!-- Head -->
+  <rect x="118" y="156" width="276" height="232" rx="46" fill="#F2F2F2" stroke="#111111" stroke-width="15" />
+
+  <!-- Eyebrows -->
+  <path d="M150 194 L232 212" fill="none" stroke="#111111" stroke-width="12" stroke-linecap="round" />
+  <path d="M282 190 Q320 166 360 192" fill="none" stroke="#111111" stroke-width="12" stroke-linecap="round" />
+
+  <!-- Left half-lidded eye -->
+  <path d="M152 244 L238 232 C240 264 220 286 196 286 C170 286 150 268 152 244 Z" fill="#FFFFFF" stroke="#111111" stroke-width="12" stroke-linejoin="round" />
+  <circle cx="204" cy="259" r="17" fill="#111111" />
+
+  <!-- Right wide eye -->
+  <circle cx="320" cy="248" r="44" fill="#FFFFFF" stroke="#111111" stroke-width="13" />
+  <circle cx="305" cy="236" r="18" fill="#111111" />
+
+  <!-- Grin -->
+  <path d="M158 310 Q256 326 354 310 C348 358 310 374 256 374 C202 374 164 358 158 310 Z" fill="#FFFFFF" stroke="#111111" stroke-width="12" stroke-linejoin="round" />
+  <path d="M196 322 L196 358 M226 324 L226 365 M256 325 L256 366 M286 324 L286 365 M316 322 L316 358" fill="none" stroke="#111111" stroke-width="9" stroke-linecap="round" />
+</svg>

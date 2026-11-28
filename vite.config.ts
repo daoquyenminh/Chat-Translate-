@@ -27,11 +27,7 @@ export default defineConfig(() => {
           }
           const distAiStudioDir = path.resolve(distDir, 'assets/aistudio');
           if (fs.existsSync(distAiStudioDir)) {
-            for (const entry of fs.readdirSync(distAiStudioDir)) {
-              if (entry !== 'Logo_robot_meme_2x__1__220cb57d.png') {
-                fs.rmSync(path.join(distAiStudioDir, entry), {force: true});
-              }
-            }
+            fs.rmSync(distAiStudioDir, {recursive: true, force: true});
           }
         },
       },
