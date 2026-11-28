@@ -82,15 +82,16 @@ export class ProviderRouteError extends Error {
 }
 
 export const DEFAULT_GROQ_MODELS = [
-  'openai/gpt-oss-20b',
   'qwen/qwen3.8-27b',
   'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
 ] as const;
 
 export const DEFAULT_CF_AI_MODELS = [
-  '@cf/meta/llama-3.1-8b-instruct-fast',
   '@cf/google/gemma-3-12b-it',
-  '@cf/meta/llama-3.1-8b-instruct',
+  '@cf/zai-org/glm-4.7-flash',
+  '@cf/qwen/qwen3-30b-a3b-fp8',
+  '@cf/meta/llama-3.1-8b-instruct-fast',
 ] as const;
 
 const GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions';
@@ -145,13 +146,13 @@ export function parseModelList(override: string | undefined, defaults: readonly 
 
 export function buildTranslateCacheKey(options: TranslateRouterOptions): string {
   const normalized = options.text.trim().replace(/\s+/g, ' ');
-  return `tr:v1:${options.mode}:${options.targetLang}:${normalized}`;
+  return `tr:v2:${options.mode}:${options.targetLang}:${normalized}`;
 }
 
 export function buildStudyCacheKey(options: StudyRouterOptions): string {
   const src = options.sourceText.trim().replace(/\s+/g, ' ');
   const tr = options.translatedText.trim().replace(/\s+/g, ' ');
-  return `st:v1:${options.mode}:${src}:::${tr}`;
+  return `st:v2:${options.mode}:${src}:::${tr}`;
 }
 
 function getLru<T>(cache: Map<string, CacheEntry<T>>, key: string): T | undefined {
@@ -509,7 +510,13 @@ function buildGroqPayload(
   model: string,
   systemInstruction: string,
   userPrompt: string,
-  options: { stream: boolean; temperature: number; jsonMode?: boolean; maxTokens: number }
+  options: {
+    stream: boolean;
+    temperature: number;
+    jsonMode?: boolean;
+    maxTokens: number;
+    omitReasoningEffort?: boolean;
+  }
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     model,
@@ -527,10 +534,12 @@ function buildGroqPayload(
   }
 
   // Keep latency low & avoid reasoning token bloat on reasoning-capable Groq models
-  if (model.startsWith('openai/gpt-oss-')) {
-    payload.reasoning_effort = 'low';
-  } else if (model.startsWith('qwen/')) {
-    payload.reasoning_effort = 'none';
+  if (!options.omitReasoningEffort) {
+    if (model.startsWith('openai/gpt-oss-')) {
+      payload.reasoning_effort = 'low';
+    } else if (model.startsWith('qwen/')) {
+      payload.reasoning_effort = 'none';
+    }
   }
 
   return payload;
@@ -543,20 +552,27 @@ async function openGroqTranslateStream(
   userPrompt: string,
   regenerate?: boolean
 ): Promise<OpenedTranslateStream> {
-  const response = await fetchWithTimeout(GROQ_CHAT_COMPLETIONS_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(
-      buildGroqPayload(model, systemInstruction, userPrompt, {
-        stream: true,
-        temperature: regenerate ? 0.6 : 0.2,
-        maxTokens: 1024,
-      })
-    ),
-  });
+  const sendRequest = (omitReasoningEffort: boolean) =>
+    fetchWithTimeout(GROQ_CHAT_COMPLETIONS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(
+        buildGroqPayload(model, systemInstruction, userPrompt, {
+          stream: true,
+          temperature: regenerate ? 0.6 : 0.2,
+          maxTokens: 1024,
+          omitReasoningEffort,
+        })
+      ),
+    });
+
+  let response = await sendRequest(false);
+  if (response.status === 400) {
+    response = await sendRequest(true);
+  }
 
   if (!response.ok || !response.body) {
     const bodyText = await response.text().catch(() => '');
@@ -577,21 +593,28 @@ async function runGroqStudy(
   options: StudyRouterOptions
 ): Promise<StudyAnalysis> {
   const prompt = `${buildStudyPrompt(options.sourceText, options.translatedText, options.mode)}\n${STUDY_JSON_SCHEMA_PROMPT}`;
-  const response = await fetchWithTimeout(GROQ_CHAT_COMPLETIONS_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(
-      buildGroqPayload(model, STUDY_SYSTEM_INSTRUCTION, prompt, {
-        stream: false,
-        temperature: 0.2,
-        jsonMode: true,
-        maxTokens: 1600,
-      })
-    ),
-  });
+  const sendRequest = (omitReasoningEffort: boolean) =>
+    fetchWithTimeout(GROQ_CHAT_COMPLETIONS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(
+        buildGroqPayload(model, STUDY_SYSTEM_INSTRUCTION, prompt, {
+          stream: false,
+          temperature: 0.2,
+          jsonMode: true,
+          maxTokens: 1600,
+          omitReasoningEffort,
+        })
+      ),
+    });
+
+  let response = await sendRequest(false);
+  if (response.status === 400) {
+    response = await sendRequest(true);
+  }
 
   if (!response.ok) {
     const bodyText = await response.text().catch(() => '');
