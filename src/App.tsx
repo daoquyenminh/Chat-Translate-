@@ -42,10 +42,13 @@ const SavedLessonsModal = lazy(() =>
 );
 
 const DEFAULT_MODE: TranslationMode = 'formal';
+const DEFAULT_SPEECH_RATE = 1;
 const MODE_STORAGE_KEY = 'cydia_translate_mode_v1';
 const MODE_COOKIE_KEY = 'cydia_mode_v1';
 const VOICE_STORAGE_KEY = 'cydia_translate_voice_v1';
 const VOICE_COOKIE_KEY = 'cydia_voice_v1';
+const SPEECH_RATE_STORAGE_KEY = 'cydia_translate_speech_rate_v1';
+const SPEECH_RATE_COOKIE_KEY = 'cydia_speech_rate_v1';
 const MESSAGES_STORAGE_KEY = 'cydia_translate_messages_v2';
 const MESSAGES_DAY_STORAGE_KEY = 'cydia_translate_messages_day_v1';
 const SAVED_LESSONS_STORAGE_KEY = 'cydia_translate_saved_lessons_v1';
@@ -212,9 +215,70 @@ function purgeExpiredMessagesBeforeHydrate(): void {
   }
 }
 
+function normalizeSpeechRate(raw: unknown): number {
+  const num = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(num)) return DEFAULT_SPEECH_RATE;
+  const clamped = Math.min(1.5, Math.max(0.5, num));
+  return Math.round(clamped * 20) / 20;
+}
+
+function readSpeechRateCookie(): number | null {
+  try {
+    const match = document.cookie
+      .split('; ')
+      .find((row) => row.startsWith(`${SPEECH_RATE_COOKIE_KEY}=`));
+    if (!match) return null;
+    const decoded = Number(decodeURIComponent(match.slice(SPEECH_RATE_COOKIE_KEY.length + 1)).trim());
+    if (Number.isFinite(decoded)) return normalizeSpeechRate(decoded);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSpeechRateSetting(nextRate: number): void {
+  const safe = normalizeSpeechRate(nextRate);
+  try {
+    window.localStorage.setItem(SPEECH_RATE_STORAGE_KEY, JSON.stringify(safe));
+  } catch {
+    // Ignore storage quota errors
+  }
+  try {
+    document.cookie = `${SPEECH_RATE_COOKIE_KEY}=${encodeURIComponent(String(safe))}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    // Ignore cookie errors
+  }
+}
+
+function loadSavedSpeechRate(): number {
+  try {
+    const raw = window.localStorage.getItem(SPEECH_RATE_STORAGE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+          return normalizeSpeechRate(parsed);
+        }
+      } catch {
+        const num = Number(raw.trim());
+        if (Number.isFinite(num)) return normalizeSpeechRate(num);
+      }
+    }
+  } catch {
+    // Fall through to cookie backup
+  }
+  const fromCookie = readSpeechRateCookie();
+  if (fromCookie !== null) {
+    persistSpeechRateSetting(fromCookie);
+    return fromCookie;
+  }
+  return DEFAULT_SPEECH_RATE;
+}
+
 purgeExpiredMessagesBeforeHydrate();
 const INITIAL_SAVED_MODE = loadSavedMode();
 const INITIAL_SAVED_VOICE = loadSavedVoiceGender();
+const INITIAL_SAVED_SPEECH_RATE = loadSavedSpeechRate();
 const INITIAL_SAVED_THEME = loadSavedTheme();
 applyThemeCssVars(INITIAL_SAVED_THEME);
 
@@ -242,6 +306,10 @@ export default function App() {
     VOICE_STORAGE_KEY,
     INITIAL_SAVED_VOICE
   );
+  const [storedSpeechRate, setStoredSpeechRate] = useLocalStorage<number>(
+    SPEECH_RATE_STORAGE_KEY,
+    INITIAL_SAVED_SPEECH_RATE
+  );
   const [storedTheme, setStoredTheme] = useLocalStorage<ChatTheme>(
     THEME_STORAGE_KEY,
     INITIAL_SAVED_THEME
@@ -264,6 +332,7 @@ export default function App() {
 
   const mode = normalizeTranslationMode(storedMode);
   const voiceGender = normalizeVoiceGender(storedVoiceGender);
+  const speechRate = normalizeSpeechRate(storedSpeechRate);
   const theme = useMemo(() => normalizeTheme(storedTheme), [storedTheme]);
 
   const handleModeChange = useCallback(
@@ -1108,6 +1177,19 @@ export default function App() {
     [setStoredVoiceGender, stopSpeech]
   );
 
+  const handleSpeechRateChange = useCallback(
+    (nextRate: number) => {
+      const safe = normalizeSpeechRate(nextRate);
+      persistSpeechRateSetting(safe);
+      setStoredSpeechRate(safe);
+      if (audioRef.current) {
+        audioRef.current.defaultPlaybackRate = safe;
+        audioRef.current.playbackRate = safe;
+      }
+    },
+    [setStoredSpeechRate]
+  );
+
   useEffect(() => {
     const cache = ttsCacheRef.current;
     return () => {
@@ -1183,12 +1265,15 @@ export default function App() {
         audio.onended = clearPlayback;
         audio.onerror = clearPlayback;
         audio.src = url;
+        audio.defaultPlaybackRate = speechRate;
+        audio.playbackRate = speechRate;
         audio.currentTime = 0;
         setSpeakingKey(key);
         setSpeechHighlight(null);
 
         try {
           await audio.play();
+          audio.playbackRate = speechRate;
           if (aligned.length > 0) {
             stopSpeechSyncLoop();
             speechRafRef.current = window.requestAnimationFrame(syncFrame);
@@ -1208,6 +1293,7 @@ export default function App() {
           setSpeechHighlight((prev) => (prev?.key === key ? null : prev));
         };
         const ok = speakWithBrowserVoice(cleanText, voiceGender, {
+          rate: speechRate,
           onBoundary: (start, end) => {
             setSpeechHighlight({
               key,
@@ -1306,7 +1392,7 @@ export default function App() {
         }
       }
     },
-    [loadingSpeechKey, speakingKey, stopSpeech, stopSpeechSyncLoop, voiceGender]
+    [loadingSpeechKey, speakingKey, speechRate, stopSpeech, stopSpeechSyncLoop, voiceGender]
   );
 
   const handleClearChat = () => {
@@ -1427,10 +1513,12 @@ export default function App() {
             isOpen={showThemeSettings}
             mode={mode}
             voiceGender={voiceGender}
+            speechRate={speechRate}
             theme={theme}
             savedThemes={savedThemes}
             onModeChange={handleModeChange}
             onVoiceGenderChange={handleVoiceGenderChange}
+            onSpeechRateChange={handleSpeechRateChange}
             onThemeChange={handleThemeChange}
             onSaveCustomTheme={handleSaveCustomTheme}
             onDeleteCustomTheme={handleDeleteCustomTheme}

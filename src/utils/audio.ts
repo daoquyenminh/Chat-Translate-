@@ -161,6 +161,7 @@ export function speakWithBrowserVoice(
   text: string,
   gender: 'female' | 'male',
   callbacks?: {
+    rate?: number;
     onStart?: () => void;
     onEnd?: () => void;
     onError?: () => void;
@@ -179,10 +180,15 @@ export function speakWithBrowserVoice(
     // Ignore cancel errors
   }
 
+  const rawRate = typeof callbacks?.rate === 'number' && Number.isFinite(callbacks.rate)
+    ? callbacks.rate
+    : 1;
+  const clampedRate = Math.min(1.5, Math.max(0.5, rawRate));
+
   const startSpeaking = () => {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-US';
-    utterance.rate = 0.96;
+    utterance.rate = clampedRate;
     utterance.pitch = gender === 'male' ? 0.94 : 1.03;
 
     const picked = pickEnglishBrowserVoice(synth.getVoices(), gender);

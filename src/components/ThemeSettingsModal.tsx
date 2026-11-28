@@ -7,10 +7,12 @@ interface ThemeSettingsModalProps {
   isOpen: boolean;
   mode: TranslationMode;
   voiceGender: VoiceGender;
+  speechRate: number;
   theme: ChatTheme;
   savedThemes: ThemePreset[];
   onModeChange: (mode: TranslationMode) => void;
   onVoiceGenderChange: (gender: VoiceGender) => void;
+  onSpeechRateChange: (rate: number) => void;
   onThemeChange: (theme: ChatTheme) => void;
   onSaveCustomTheme: (name: string, theme: ChatTheme) => void;
   onDeleteCustomTheme: (presetId: string) => void;
@@ -45,10 +47,12 @@ export function ThemeSettingsModal({
   isOpen,
   mode,
   voiceGender,
+  speechRate,
   theme,
   savedThemes,
   onModeChange,
   onVoiceGenderChange,
+  onSpeechRateChange,
   onThemeChange,
   onSaveCustomTheme,
   onDeleteCustomTheme,
@@ -181,62 +185,126 @@ export function ThemeSettingsModal({
             </div>
           </section>
 
-          {/* Voice Gender (Nữ / Nam) */}
+          {/* Voice Gender (Nữ / Nam) & Speech Speed */}
           <section className="space-y-2.5">
             <span className="block text-[12px] font-semibold tracking-wider text-[#71717A] uppercase">
               Giọng đọc phát âm
             </span>
-            <div className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl border border-[#EAEAEA] bg-white">
-              <div className="min-w-0">
-                <div className="text-[14px] font-semibold text-[#111111]">
-                  {isMale ? 'Giọng nam' : 'Giọng nữ'}
+            <div className="rounded-2xl border border-[#EAEAEA] bg-white divide-y divide-[#F0F0F2] overflow-hidden">
+              <div className="flex items-center justify-between gap-3 px-4 py-3.5">
+                <div className="min-w-0">
+                  <div className="text-[14px] font-semibold text-[#111111]">
+                    {isMale ? 'Giọng nam' : 'Giọng nữ'}
+                  </div>
+                  <div className="text-[12px] text-[#71717A] mt-0.5">
+                    {isMale
+                      ? 'Giọng nam tiếng Anh Mỹ (Microsoft Neural)'
+                      : 'Giọng nữ tiếng Anh Mỹ (Microsoft Neural)'}
+                  </div>
                 </div>
-                <div className="text-[12px] text-[#71717A] mt-0.5">
-                  {isMale
-                    ? 'Giọng nam tiếng Anh Mỹ (Microsoft Neural)'
-                    : 'Giọng nữ tiếng Anh Mỹ (Microsoft Neural)'}
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => onVoiceGenderChange('female')}
+                    className={`text-[13px] py-1 transition-colors whitespace-nowrap cursor-pointer ${
+                      !isMale
+                        ? 'font-semibold text-[#111111]'
+                        : 'font-medium text-[#8E8E93] hover:text-[#52525B]'
+                    }`}
+                  >
+                    Nữ
+                  </button>
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isMale}
+                    aria-label="Chuyển giữa giọng đọc nữ và nam"
+                    onClick={() => onVoiceGenderChange(isMale ? 'female' : 'male')}
+                    className="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full bg-[var(--cydia-accent)] transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
+                  >
+                    <span
+                      className={`inline-block h-4.5 w-4.5 transform rounded-full bg-[var(--cydia-switch-knob)] shadow-xs transition-transform duration-150 ${
+                        isMale ? 'translate-x-5.5' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onVoiceGenderChange('male')}
+                    className={`text-[13px] py-1 transition-colors whitespace-nowrap cursor-pointer ${
+                      isMale
+                        ? 'font-semibold text-[#111111]'
+                        : 'font-medium text-[#8E8E93] hover:text-[#52525B]'
+                    }`}
+                  >
+                    Nam
+                  </button>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => onVoiceGenderChange('female')}
-                  className={`text-[13px] py-1 transition-colors whitespace-nowrap cursor-pointer ${
-                    !isMale
-                      ? 'font-semibold text-[#111111]'
-                      : 'font-medium text-[#8E8E93] hover:text-[#52525B]'
-                  }`}
-                >
-                  Nữ
-                </button>
+              {/* Speech Rate Slider */}
+              <div className="px-4 py-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <label
+                      htmlFor="speech-rate-slider"
+                      className="block text-[14px] font-semibold text-[#111111]"
+                    >
+                      Tốc độ đọc
+                    </label>
+                    <div className="text-[12px] text-[#71717A] mt-0.5">
+                      Kéo để chỉnh chậm hoặc nhanh theo nhịp nghe của bạn
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onSpeechRateChange(1)}
+                    title={speechRate === 1 ? 'Tốc độ chuẩn' : 'Bấm để về tốc độ chuẩn 1.0x'}
+                    className="px-2.5 py-1 rounded-lg bg-[#F4F4F5] hover:bg-[#E4E4E7] text-[13px] font-semibold text-[#111111] tabular-nums transition-colors shrink-0 cursor-pointer"
+                  >
+                    {speechRate.toFixed(2).replace(/0$/, '')}x
+                  </button>
+                </div>
 
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={isMale}
-                  aria-label="Chuyển giữa giọng đọc nữ và nam"
-                  onClick={() => onVoiceGenderChange(isMale ? 'female' : 'male')}
-                  className="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full bg-[var(--cydia-accent)] transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
-                >
-                  <span
-                    className={`inline-block h-4.5 w-4.5 transform rounded-full bg-[var(--cydia-switch-knob)] shadow-xs transition-transform duration-150 ${
-                      isMale ? 'translate-x-5.5' : 'translate-x-1'
-                    }`}
+                <div className="space-y-1">
+                  <input
+                    id="speech-rate-slider"
+                    type="range"
+                    min={0.5}
+                    max={1.5}
+                    step={0.05}
+                    value={speechRate}
+                    onChange={(e) => onSpeechRateChange(parseFloat(e.target.value))}
+                    aria-label="Tốc độ đọc phát âm"
+                    className="w-full h-1.5 rounded-full accent-[var(--cydia-accent)] cursor-pointer"
                   />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onVoiceGenderChange('male')}
-                  className={`text-[13px] py-1 transition-colors whitespace-nowrap cursor-pointer ${
-                    isMale
-                      ? 'font-semibold text-[#111111]'
-                      : 'font-medium text-[#8E8E93] hover:text-[#52525B]'
-                  }`}
-                >
-                  Nam
-                </button>
+                  <div className="flex items-center justify-between text-[11px] text-[#8E8E93] tabular-nums">
+                    <button
+                      type="button"
+                      onClick={() => onSpeechRateChange(0.5)}
+                      className="hover:text-[#111111] transition-colors cursor-pointer"
+                    >
+                      0.5x Chậm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSpeechRateChange(1)}
+                      className="hover:text-[#111111] transition-colors cursor-pointer"
+                    >
+                      1.0x Chuẩn
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSpeechRateChange(1.5)}
+                      className="hover:text-[#111111] transition-colors cursor-pointer"
+                    >
+                      1.5x Nhanh
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
