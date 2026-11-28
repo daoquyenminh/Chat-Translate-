@@ -357,7 +357,7 @@ const STUDY_RESPONSE_SCHEMA = {
   ],
 };
 
-function normalizeStudyAnalysis(
+export function normalizeStudyAnalysis(
   raw: Partial<StudyAnalysis>,
   fallbackSource: string,
   fallbackTranslated: string

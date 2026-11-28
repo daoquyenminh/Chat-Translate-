@@ -1,7 +1,23 @@
 import { GoogleGenAI } from '@google/genai';
-import { TargetLanguage, TranslationMode, VoiceGender } from './shared/prompts';
+import { StudyAnalysis, TargetLanguage, TranslationMode, VoiceGender } from './shared/prompts';
 import { EdgeSocketConnector, synthesizeWithEdgeTts } from './shared/edgeTts';
 import {
+  CloudflareAiBinding,
+  DEFAULT_CF_AI_MODELS,
+  DEFAULT_GROQ_MODELS,
+  ProviderRouteError,
+  RouterEnvConfig,
+  buildStudyCacheKey,
+  buildTranslateCacheKey,
+  parseKeyList,
+  parseModelList,
+  routeStudyAnalysis,
+  routeTranslateStream,
+  setCachedStudy,
+  setCachedTranslation,
+} from './shared/llmRouter';
+import {
+  OpenedTranslateStream,
   formatGeminiUserError,
   generateStudyAnalysis,
   inspectGeminiError,
@@ -28,6 +44,10 @@ interface DurableObjectNamespaceLike {
   get(id: unknown, options?: { locationHint?: string }): DurableObjectStubLike;
 }
 
+interface ExecutionContextLike {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 interface CloudflareRequest extends Request {
   cf?: {
     colo?: string;
@@ -35,8 +55,19 @@ interface CloudflareRequest extends Request {
   };
 }
 
+interface CloudflareCacheLike {
+  match(request: Request): Promise<Response | undefined>;
+  put(request: Request, response: Response): Promise<void>;
+}
+
 interface CloudflareEnv {
+  AI?: CloudflareAiBinding;
+  GROQ_API_KEY?: SecretOrString;
+  GROQ_API_KEYS?: SecretOrString;
+  GROQ_MODEL?: SecretOrString;
+  CF_AI_MODEL?: SecretOrString;
   GEMINI_API_KEY?: SecretOrString;
+  GEMINI_API_KEYS?: SecretOrString;
   VITE_GEMINI_API_KEY?: SecretOrString;
   API_KEY?: SecretOrString;
   GOOGLE_API_KEY?: SecretOrString;
@@ -109,6 +140,9 @@ const RESTRICTED_COLOS = new Set([
   'MSQ',
 ]);
 
+const EDGE_CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours
+const workerGeminiClients = new Map<string, GoogleGenAI>();
+
 function jsonResponse(
   payload: Record<string, unknown>,
   status = 200,
@@ -135,56 +169,97 @@ async function resolveSingleSecret(val?: SecretOrString): Promise<string> {
         return resolved.trim();
       }
     } catch {
-      // Ignore
+      // Ignore unavailable secret store binding
     }
   }
   return '';
 }
 
-async function resolveApiKey(env: CloudflareEnv): Promise<string> {
-  const candidates = [
-    env.GEMINI_API_KEY,
-    env.VITE_GEMINI_API_KEY,
-    env.API_KEY,
-    env.GOOGLE_API_KEY,
-  ];
-  for (const val of candidates) {
-    const resolved = await resolveSingleSecret(val);
-    if (resolved) return resolved;
+async function resolveGeminiKeys(env: CloudflareEnv): Promise<string[]> {
+  const values = await Promise.all([
+    resolveSingleSecret(env.GEMINI_API_KEY),
+    resolveSingleSecret(env.GEMINI_API_KEYS),
+    resolveSingleSecret(env.VITE_GEMINI_API_KEY),
+    resolveSingleSecret(env.API_KEY),
+    resolveSingleSecret(env.GOOGLE_API_KEY),
+  ]);
+  return parseKeyList(...values);
+}
+
+async function resolveGroqKeys(env: CloudflareEnv): Promise<string[]> {
+  const values = await Promise.all([
+    resolveSingleSecret(env.GROQ_API_KEY),
+    resolveSingleSecret(env.GROQ_API_KEYS),
+  ]);
+  return parseKeyList(...values);
+}
+
+function getEdgeCache(): CloudflareCacheLike | null {
+  const globalCaches = (globalThis as unknown as { caches?: { default?: CloudflareCacheLike } }).caches;
+  return globalCaches?.default ?? null;
+}
+
+async function buildEdgeCacheRequest(kind: 'translate' | 'study', key: string): Promise<Request> {
+  const bytes = new TextEncoder().encode(key);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hashHex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return new Request(`https://cache.cydia-translate.internal/v1/${kind}/${hashHex}`, {
+    method: 'GET',
+  });
+}
+
+async function readEdgeCacheText(kind: 'translate' | 'study', key: string): Promise<string | null> {
+  const cache = getEdgeCache();
+  if (!cache) return null;
+  try {
+    const req = await buildEdgeCacheRequest(kind, key);
+    const hit = await cache.match(req);
+    if (!hit || !hit.ok) return null;
+    const text = await hit.text();
+    return text.trim() ? text : null;
+  } catch {
+    return null;
   }
-  return '';
 }
 
-function missingKeyResponse(env: CloudflareEnv): Response {
-  const envKeys = Object.keys(env).filter((k) => k !== 'ASSETS' && k !== 'GEMINI_PROXY');
-  const detail =
-    envKeys.length > 0
-      ? ` (đang có biến: ${envKeys.join(', ')})`
-      : ' (hiện chưa có biến runtime nào — lưu ý thêm ở mục Variables and Secrets hoặc Secrets Store)';
-  return jsonResponse(
-    {
-      error: `Chưa tìm thấy GEMINI_API_KEY trên Cloudflare Worker${detail}.`,
-    },
-    500
-  );
-}
-
-let cachedWorkerKey = '';
-let cachedWorkerClient: GoogleGenAI | null = null;
-
-function getOrCreateClient(apiKey: string): GoogleGenAI {
-  if (!cachedWorkerClient || cachedWorkerKey !== apiKey) {
-    cachedWorkerKey = apiKey;
-    cachedWorkerClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
+async function writeEdgeCacheText(
+  kind: 'translate' | 'study',
+  key: string,
+  body: string,
+  contentType: string
+): Promise<void> {
+  const cache = getEdgeCache();
+  if (!cache || !body.trim()) return;
+  try {
+    const req = await buildEdgeCacheRequest(kind, key);
+    const resp = new Response(body, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': `public, max-age=${EDGE_CACHE_TTL_SECONDS}`,
       },
     });
+    await cache.put(req, resp);
+  } catch {
+    // Cache write failures are non-fatal
   }
-  return cachedWorkerClient;
+}
+
+function getOrCreateGeminiClient(apiKey: string): GoogleGenAI {
+  const existing = workerGeminiClients.get(apiKey);
+  if (existing) return existing;
+  const client = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+  workerGeminiClients.set(apiKey, client);
+  return client;
 }
 
 interface CloudflareWebSocket extends WebSocket {
@@ -261,70 +336,112 @@ async function forwardToUsProxy(
   return stub.fetch(proxyReq);
 }
 
-async function runGeminiTranslation(
-  payload: NormalizedTranslatePayload,
+async function openGeminiProxyStream(
   env: CloudflareEnv,
-  allowProxyFallback: boolean
-): Promise<Response> {
-  const apiKey = await resolveApiKey(env);
-  if (!apiKey) {
-    return missingKeyResponse(env);
+  payload: NormalizedTranslatePayload
+): Promise<OpenedTranslateStream | null> {
+  const resp = await forwardToUsProxy(env, '/api/translate', payload);
+  if (!resp) return null;
+  if (!resp.ok || !resp.body) {
+    const errText = await resp.text().catch(() => '');
+    const err = new Error(errText || `GEMINI_PROXY_HTTP_${resp.status}`) as Error & { status?: number };
+    err.status = resp.status;
+    throw err;
   }
 
-  try {
-    const ai = getOrCreateClient(apiKey);
-    const opened = await openTranslateStreamWithFallback(ai, {
-      text: payload.text,
-      mode: payload.mode,
-      targetLang: payload.targetLang,
-      regenerate: payload.regenerate,
-    });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let firstChunk = '';
 
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        try {
-          controller.enqueue(encoder.encode(opened.firstChunk));
-          for await (const piece of opened.rest) {
-            controller.enqueue(encoder.encode(piece));
-          }
-          controller.close();
-        } catch (streamErr) {
-          controller.error(streamErr);
-        }
-      },
-    });
-
-    return new Response(readable, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'X-Cydia-Translate': '1',
-        'Cache-Control': 'no-cache, no-transform',
-      },
-    });
-  } catch (err) {
-    const info = inspectGeminiError(err);
-
-    if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
-      const proxied = await forwardToUsProxy(env, '/api/translate', payload);
-      if (proxied) {
-        return proxied;
-      }
+  while (!firstChunk) {
+    const { value, done } = await reader.read();
+    if (done) {
+      reader.releaseLock();
+      throw new Error('EMPTY_PROXY_STREAM');
     }
-
-    const mapped = formatGeminiUserError(info, 'cloudflare');
-    const extraHeaders = mapped.retryAfterSeconds
-      ? { 'Retry-After': String(mapped.retryAfterSeconds) }
-      : undefined;
-    return jsonResponse({ error: mapped.error }, mapped.status, extraHeaders);
+    const piece = decoder.decode(value, { stream: true });
+    if (piece) {
+      firstChunk = piece;
+    }
   }
+
+  async function* restGenerator(): AsyncGenerator<string, void, unknown> {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const piece = decoder.decode(value, { stream: true });
+        if (piece) yield piece;
+      }
+      const tail = decoder.decode();
+      if (tail) yield tail;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  return {
+    firstChunk,
+    rest: restGenerator(),
+    modelUsed: 'gemini-proxy',
+  };
+}
+
+async function runGeminiProxyStudy(
+  env: CloudflareEnv,
+  payload: NormalizedStudyPayload
+): Promise<StudyAnalysis | null> {
+  const resp = await forwardToUsProxy(env, '/api/study', payload);
+  if (!resp) return null;
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    const err = new Error(errText || `GEMINI_PROXY_HTTP_${resp.status}`) as Error & { status?: number };
+    err.status = resp.status;
+    throw err;
+  }
+  return (await resp.json()) as StudyAnalysis;
+}
+
+async function buildRouterConfig(
+  env: CloudflareEnv,
+  options: {
+    preferGeminiProxy: boolean;
+    translatePayload?: NormalizedTranslatePayload;
+    studyPayload?: NormalizedStudyPayload;
+    allowProxyFallback: boolean;
+  }
+): Promise<RouterEnvConfig> {
+  const [groqApiKeys, geminiApiKeys, groqModelOverride, cfAiModelOverride] = await Promise.all([
+    resolveGroqKeys(env),
+    resolveGeminiKeys(env),
+    resolveSingleSecret(env.GROQ_MODEL),
+    resolveSingleSecret(env.CF_AI_MODEL),
+  ]);
+
+  return {
+    groqApiKeys,
+    groqModels: parseModelList(groqModelOverride, DEFAULT_GROQ_MODELS),
+    cfAiBinding: env.AI,
+    cfAiModels: parseModelList(cfAiModelOverride, DEFAULT_CF_AI_MODELS),
+    geminiApiKeys,
+    geminiClients: workerGeminiClients,
+    preferGeminiProxy: options.allowProxyFallback && options.preferGeminiProxy,
+    runGeminiTranslateViaProxy:
+      options.allowProxyFallback && env.GEMINI_PROXY && options.translatePayload
+        ? () => openGeminiProxyStream(env, options.translatePayload as NormalizedTranslatePayload)
+        : undefined,
+    runGeminiStudyViaProxy:
+      options.allowProxyFallback && env.GEMINI_PROXY && options.studyPayload
+        ? () => runGeminiProxyStudy(env, options.studyPayload as NormalizedStudyPayload)
+        : undefined,
+    envLabel: 'cloudflare',
+  };
 }
 
 async function handleTranslate(
   request: CloudflareRequest,
   env: CloudflareEnv,
-  allowProxyFallback: boolean
+  ctx?: ExecutionContextLike
 ): Promise<Response> {
   let body: TranslateBody;
   try {
@@ -351,45 +468,83 @@ async function handleTranslate(
     targetLang,
     regenerate: body.regenerate,
   };
-  const colo = (request.cf?.colo ?? '').toUpperCase();
 
-  if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
-    const proxied = await forwardToUsProxy(env, '/api/translate', payload);
-    if (proxied) {
-      return proxied;
+  const cacheKey = buildTranslateCacheKey(payload);
+
+  if (!payload.regenerate) {
+    const edgeHit = await readEdgeCacheText('translate', cacheKey);
+    if (edgeHit) {
+      setCachedTranslation(cacheKey, edgeHit);
+      return new Response(edgeHit, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Cydia-Translate': '1',
+          'X-Cydia-Provider': 'edge-cache',
+          'Cache-Control': 'no-cache, no-transform',
+        },
+      });
     }
   }
 
-  return runGeminiTranslation(payload, env, allowProxyFallback);
-}
-
-async function runGeminiStudy(
-  payload: NormalizedStudyPayload,
-  env: CloudflareEnv,
-  allowProxyFallback: boolean
-): Promise<Response> {
-  const apiKey = await resolveApiKey(env);
-  if (!apiKey) {
-    return missingKeyResponse(env);
-  }
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+  const config = await buildRouterConfig(env, {
+    preferGeminiProxy: Boolean(colo && RESTRICTED_COLOS.has(colo)),
+    translatePayload: payload,
+    allowProxyFallback: true,
+  });
 
   try {
-    const ai = getOrCreateClient(apiKey);
-    const analysis = await generateStudyAnalysis(ai, payload);
-    return jsonResponse(analysis as unknown as Record<string, unknown>, 200, {
-      'Cache-Control': 'no-store',
+    const opened = await routeTranslateStream(payload, config);
+
+    const encoder = new TextEncoder();
+    const readable = new ReadableStream({
+      async start(controller) {
+        let assembled = opened.firstChunk;
+        try {
+          controller.enqueue(encoder.encode(opened.firstChunk));
+          for await (const piece of opened.rest) {
+            assembled += piece;
+            controller.enqueue(encoder.encode(piece));
+          }
+          controller.close();
+
+          const trimmed = assembled.trim();
+          if (trimmed && opened.provider !== 'cache') {
+            setCachedTranslation(opened.cacheKey, trimmed);
+            const writePromise = writeEdgeCacheText(
+              'translate',
+              opened.cacheKey,
+              trimmed,
+              'text/plain; charset=utf-8'
+            );
+            if (ctx) {
+              ctx.waitUntil(writePromise);
+            }
+          }
+        } catch (streamErr) {
+          controller.error(streamErr);
+        }
+      },
     });
-  } catch (err) {
-    const info = inspectGeminiError(err);
 
-    if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
-      const proxied = await forwardToUsProxy(env, '/api/study', payload);
-      if (proxied) {
-        return proxied;
-      }
+    return new Response(readable, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Cydia-Translate': '1',
+        'X-Cydia-Provider': opened.provider,
+        'Cache-Control': 'no-cache, no-transform',
+      },
+    });
+  } catch (err: unknown) {
+    if (err instanceof ProviderRouteError) {
+      const extraHeaders = err.retryAfterSeconds
+        ? { 'Retry-After': String(err.retryAfterSeconds) }
+        : undefined;
+      return jsonResponse({ error: err.message }, err.status, extraHeaders);
     }
-
-    const mapped = formatGeminiUserError(info, 'cloudflare');
+    const mapped = formatGeminiUserError(inspectGeminiError(err), 'cloudflare');
     const extraHeaders = mapped.retryAfterSeconds
       ? { 'Retry-After': String(mapped.retryAfterSeconds) }
       : undefined;
@@ -400,7 +555,7 @@ async function runGeminiStudy(
 async function handleStudy(
   request: CloudflareRequest,
   env: CloudflareEnv,
-  allowProxyFallback: boolean
+  ctx?: ExecutionContextLike
 ): Promise<Response> {
   let body: StudyBody;
   try {
@@ -431,16 +586,59 @@ async function handleStudy(
     translatedText: safeTranslated,
     mode,
   };
-  const colo = (request.cf?.colo ?? '').toUpperCase();
 
-  if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
-    const proxied = await forwardToUsProxy(env, '/api/study', payload);
-    if (proxied) {
-      return proxied;
+  const cacheKey = buildStudyCacheKey(payload);
+  const edgeHit = await readEdgeCacheText('study', cacheKey);
+  if (edgeHit) {
+    try {
+      const parsed = JSON.parse(edgeHit) as StudyAnalysis;
+      setCachedStudy(cacheKey, parsed);
+      return jsonResponse(parsed as unknown as Record<string, unknown>, 200, {
+        'X-Cydia-Provider': 'edge-cache',
+        'Cache-Control': 'no-store',
+      });
+    } catch {
+      // Ignore malformed cached payload
     }
   }
 
-  return runGeminiStudy(payload, env, allowProxyFallback);
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+  const config = await buildRouterConfig(env, {
+    preferGeminiProxy: Boolean(colo && RESTRICTED_COLOS.has(colo)),
+    studyPayload: payload,
+    allowProxyFallback: true,
+  });
+
+  try {
+    const result = await routeStudyAnalysis(payload, config);
+    if (result.provider !== 'cache') {
+      const writePromise = writeEdgeCacheText(
+        'study',
+        result.cacheKey,
+        JSON.stringify(result.analysis),
+        'application/json; charset=utf-8'
+      );
+      if (ctx) {
+        ctx.waitUntil(writePromise);
+      }
+    }
+    return jsonResponse(result.analysis as unknown as Record<string, unknown>, 200, {
+      'X-Cydia-Provider': result.provider,
+      'Cache-Control': 'no-store',
+    });
+  } catch (err: unknown) {
+    if (err instanceof ProviderRouteError) {
+      const extraHeaders = err.retryAfterSeconds
+        ? { 'Retry-After': String(err.retryAfterSeconds) }
+        : undefined;
+      return jsonResponse({ error: err.message }, err.status, extraHeaders);
+    }
+    const mapped = formatGeminiUserError(inspectGeminiError(err), 'cloudflare');
+    const extraHeaders = mapped.retryAfterSeconds
+      ? { 'Retry-After': String(mapped.retryAfterSeconds) }
+      : undefined;
+    return jsonResponse({ error: mapped.error }, mapped.status, extraHeaders);
+  }
 }
 
 async function handleTts(request: CloudflareRequest): Promise<Response> {
@@ -476,6 +674,7 @@ async function handleTts(request: CloudflareRequest): Promise<Response> {
   }
 }
 
+// Durable Object pinned to US-West exclusively as a geo-bypass hop for Gemini fallback
 export class GeminiRegionProxy {
   private readonly env: CloudflareEnv;
 
@@ -485,34 +684,79 @@ export class GeminiRegionProxy {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const geminiKeys = await resolveGeminiKeys(this.env);
+
     if (request.method === 'GET' && url.pathname === '/api/ping') {
-      const apiKey = await resolveApiKey(this.env);
-      if (apiKey) getOrCreateClient(apiKey);
+      if (geminiKeys[0]) getOrCreateGeminiClient(geminiKeys[0]);
       return new Response(null, { status: 204 });
     }
+
+    if (geminiKeys.length === 0) {
+      return jsonResponse({ error: 'Chưa có GEMINI_API_KEY cho proxy dự phòng.' }, 500);
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/study') {
-      return handleStudy(request as CloudflareRequest, this.env, false);
+      try {
+        const payload = (await request.json()) as NormalizedStudyPayload;
+        const ai = getOrCreateGeminiClient(geminiKeys[0]);
+        const analysis = await generateStudyAnalysis(ai, payload);
+        return jsonResponse(analysis as unknown as Record<string, unknown>, 200, {
+          'Cache-Control': 'no-store',
+        });
+      } catch (err: unknown) {
+        const mapped = formatGeminiUserError(inspectGeminiError(err), 'cloudflare');
+        return jsonResponse({ error: mapped.error }, mapped.status);
+      }
     }
-    if (request.method === 'POST' && url.pathname === '/api/tts') {
-      return handleTts(request as CloudflareRequest);
+
+    if (request.method === 'POST' && url.pathname === '/api/translate') {
+      try {
+        const payload = (await request.json()) as NormalizedTranslatePayload;
+        const ai = getOrCreateGeminiClient(geminiKeys[0]);
+        const opened = await openTranslateStreamWithFallback(ai, payload);
+        const encoder = new TextEncoder();
+        const readable = new ReadableStream({
+          async start(controller) {
+            try {
+              controller.enqueue(encoder.encode(opened.firstChunk));
+              for await (const piece of opened.rest) {
+                controller.enqueue(encoder.encode(piece));
+              }
+              controller.close();
+            } catch (streamErr) {
+              controller.error(streamErr);
+            }
+          },
+        });
+        return new Response(readable, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-Cydia-Translate': '1',
+            'Cache-Control': 'no-cache, no-transform',
+          },
+        });
+      } catch (err: unknown) {
+        const mapped = formatGeminiUserError(inspectGeminiError(err), 'cloudflare');
+        return jsonResponse({ error: mapped.error }, mapped.status);
+      }
     }
-    return handleTranslate(request as CloudflareRequest, this.env, false);
+
+    return new Response(null, { status: 404 });
   }
 }
 
 export default {
-  async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
+  async fetch(request: Request, env: CloudflareEnv, ctx?: ExecutionContextLike): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/api/ping') {
-      const colo = ((request as CloudflareRequest).cf?.colo ?? '').toUpperCase();
-      if (colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
-        const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
-        const stub = env.GEMINI_PROXY.get(id, { locationHint: 'wnam' });
-        await stub.fetch(new Request('https://gemini-proxy.internal/api/ping'));
-      } else {
-        const apiKey = await resolveApiKey(env);
-        if (apiKey) getOrCreateClient(apiKey);
+      const config = await buildRouterConfig(env, {
+        preferGeminiProxy: false,
+        allowProxyFallback: false,
+      });
+      if (config.geminiApiKeys[0]) {
+        getOrCreateGeminiClient(config.geminiApiKeys[0]);
       }
       return new Response(null, {
         status: 204,
@@ -521,11 +765,11 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/translate') {
-      return handleTranslate(request as CloudflareRequest, env, true);
+      return handleTranslate(request as CloudflareRequest, env, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/study') {
-      return handleStudy(request as CloudflareRequest, env, true);
+      return handleStudy(request as CloudflareRequest, env, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/tts') {

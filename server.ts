@@ -8,10 +8,19 @@ import WebSocket from 'ws';
 import { TargetLanguage, TranslationMode, VoiceGender } from './shared/prompts';
 import { EdgeSocketConnector, synthesizeWithEdgeTts } from './shared/edgeTts';
 import {
+  DEFAULT_CF_AI_MODELS,
+  DEFAULT_GROQ_MODELS,
+  ProviderRouteError,
+  RouterEnvConfig,
+  parseKeyList,
+  parseModelList,
+  routeStudyAnalysis,
+  routeTranslateStream,
+  setCachedTranslation,
+} from './shared/llmRouter';
+import {
   formatGeminiUserError,
-  generateStudyAnalysis,
   inspectGeminiError,
-  openTranslateStreamWithFallback,
   sanitizeInputText,
 } from './shared/translateStream';
 
@@ -39,24 +48,30 @@ interface TtsRequestBody {
   voiceGender?: VoiceGender;
 }
 
-let cachedClient: GoogleGenAI | null = null;
+const serverGeminiClients = new Map<string, GoogleGenAI>();
 
-function getGenAIClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('MISSING_API_KEY');
-  }
-  if (!cachedClient) {
-    cachedClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return cachedClient;
+function getServerRouterConfig(): RouterEnvConfig {
+  const groqApiKeys = parseKeyList(process.env.GROQ_API_KEY, process.env.GROQ_API_KEYS);
+  const geminiApiKeys = parseKeyList(
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEYS,
+    process.env.GOOGLE_API_KEY
+  );
+  const cfAccountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim() ?? '';
+  const cfApiToken = process.env.CLOUDFLARE_API_TOKEN?.trim() ?? '';
+
+  return {
+    groqApiKeys,
+    groqModels: parseModelList(process.env.GROQ_MODEL, DEFAULT_GROQ_MODELS),
+    cfAiRest:
+      cfAccountId && cfApiToken
+        ? { accountId: cfAccountId, apiToken: cfApiToken }
+        : undefined,
+    cfAiModels: parseModelList(process.env.CF_AI_MODEL, DEFAULT_CF_AI_MODELS),
+    geminiApiKeys,
+    geminiClients: serverGeminiClients,
+    envLabel: 'server',
+  };
 }
 
 const nodeEdgeSocketConnector: EdgeSocketConnector = async ({ url, headers, timeoutMs }) => {
@@ -115,11 +130,7 @@ async function startServer(): Promise<void> {
   app.use(express.json({ limit: '512kb' }));
 
   app.get('/api/ping', (_req: Request, res: Response) => {
-    try {
-      getGenAIClient();
-    } catch {
-      // Ignore if key not yet configured
-    }
+    getServerRouterConfig();
     res.setHeader('Cache-Control', 'no-store');
     res.status(204).end();
   });
@@ -141,22 +152,32 @@ async function startServer(): Promise<void> {
     }
 
     try {
-      const ai = getGenAIClient();
-      const opened = await openTranslateStreamWithFallback(ai, {
-        text: rawText,
-        mode,
-        targetLang,
-        regenerate: body.regenerate,
-      });
+      const config = getServerRouterConfig();
+      const opened = await routeTranslateStream(
+        {
+          text: rawText,
+          mode,
+          targetLang,
+          regenerate: body.regenerate,
+        },
+        config
+      );
 
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('X-Cydia-Translate', '1');
+      res.setHeader('X-Cydia-Provider', opened.provider);
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('X-Accel-Buffering', 'no');
 
+      let assembled = opened.firstChunk;
       res.write(opened.firstChunk);
       for await (const piece of opened.rest) {
+        assembled += piece;
         res.write(piece);
+      }
+
+      if (opened.provider !== 'cache' && assembled.trim()) {
+        setCachedTranslation(opened.cacheKey, assembled.trim());
       }
 
       res.end();
@@ -166,21 +187,21 @@ async function startServer(): Promise<void> {
         return;
       }
 
-      if ((err as { message?: string })?.message === 'MISSING_API_KEY') {
-        res.status(500).json({
-          error: 'Chưa cấu hình GEMINI_API_KEY trong Settings > Secrets.',
-        });
+      if (err instanceof ProviderRouteError) {
+        if (err.retryAfterSeconds) {
+          res.setHeader('Retry-After', String(err.retryAfterSeconds));
+        }
+        res.status(err.status).json({ error: err.message });
         return;
       }
 
       const info = inspectGeminiError(err);
       const mapped = formatGeminiUserError(info, 'server');
-
       if (mapped.retryAfterSeconds) {
         res.setHeader('Retry-After', String(mapped.retryAfterSeconds));
       }
 
-      console.error('[/api/translate] Gemini error:', err);
+      console.error('[/api/translate] Provider error:', err);
       res.status(mapped.status).json({ error: mapped.error });
     }
   });
@@ -207,21 +228,26 @@ async function startServer(): Promise<void> {
     }
 
     try {
-      const ai = getGenAIClient();
-      const analysis = await generateStudyAnalysis(ai, {
-        sourceText: safeSource,
-        translatedText: safeTranslated,
-        mode,
-      });
+      const config = getServerRouterConfig();
+      const result = await routeStudyAnalysis(
+        {
+          sourceText: safeSource,
+          translatedText: safeTranslated,
+          mode,
+        },
+        config
+      );
 
       res.setHeader('X-Cydia-Translate', '1');
+      res.setHeader('X-Cydia-Provider', result.provider);
       res.setHeader('Cache-Control', 'no-store');
-      res.status(200).json(analysis);
+      res.status(200).json(result.analysis);
     } catch (err: unknown) {
-      if ((err as { message?: string })?.message === 'MISSING_API_KEY') {
-        res.status(500).json({
-          error: 'Chưa cấu hình GEMINI_API_KEY trong Settings > Secrets.',
-        });
+      if (err instanceof ProviderRouteError) {
+        if (err.retryAfterSeconds) {
+          res.setHeader('Retry-After', String(err.retryAfterSeconds));
+        }
+        res.status(err.status).json({ error: err.message });
         return;
       }
 
@@ -230,7 +256,7 @@ async function startServer(): Promise<void> {
       if (mapped.retryAfterSeconds) {
         res.setHeader('Retry-After', String(mapped.retryAfterSeconds));
       }
-      console.error('[/api/study] Gemini error:', err);
+      console.error('[/api/study] Provider error:', err);
       res.status(mapped.status).json({ error: mapped.error });
     }
   });
