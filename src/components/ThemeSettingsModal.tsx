@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { Bookmark, Check, RotateCcw, Trash2, X } from 'lucide-react';
-import { ChatTheme, ThemePreset, VoiceGender } from '../types';
+import { ChatTheme, ThemePreset, TranslationMode, VoiceGender } from '../types';
 import { DEFAULT_THEME } from '../defaults';
 
 interface ThemeSettingsModalProps {
   isOpen: boolean;
+  mode: TranslationMode;
   voiceGender: VoiceGender;
   theme: ChatTheme;
   savedThemes: ThemePreset[];
+  onModeChange: (mode: TranslationMode) => void;
   onVoiceGenderChange: (gender: VoiceGender) => void;
   onThemeChange: (theme: ChatTheme) => void;
   onSaveCustomTheme: (name: string, theme: ChatTheme) => void;
@@ -41,9 +43,11 @@ const COLOR_FIELDS: { key: keyof ChatTheme; label: string; hint: string }[] = [
 
 export function ThemeSettingsModal({
   isOpen,
+  mode,
   voiceGender,
   theme,
   savedThemes,
+  onModeChange,
   onVoiceGenderChange,
   onThemeChange,
   onSaveCustomTheme,
@@ -70,6 +74,7 @@ export function ThemeSettingsModal({
 
   if (!isOpen) return null;
 
+  const isFriendly = mode === 'chat';
   const isMale = voiceGender === 'male';
 
   const isPresetActive = (presetTheme: ChatTheme) =>
@@ -116,6 +121,66 @@ export function ThemeSettingsModal({
         {/* Body */}
         <div className="overflow-y-auto grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-[#F0F0F2]">
           <div className="px-5 md:px-6 py-5 space-y-6">
+          {/* Translation Style (Formal / Thân thiện) */}
+          <section className="space-y-2.5">
+            <span className="block text-[12px] font-semibold tracking-wider text-[#71717A] uppercase">
+              Phong cách dịch
+            </span>
+            <div className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl border border-[#EAEAEA] bg-white">
+              <div className="min-w-0">
+                <div className="text-[14px] font-semibold text-[#111111]">
+                  {isFriendly ? 'Thân thiện' : 'Formal'}
+                </div>
+                <div className="text-[12px] text-[#71717A] mt-0.5">
+                  {isFriendly
+                    ? 'Tự nhiên như nhắn tin, có thể viết tắt & từ lóng (u, fyi, btw, gonna...)'
+                    : 'Lịch sự, chuẩn ngữ pháp cho công việc & giao tiếp trang trọng'}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onModeChange('formal')}
+                  className={`text-[13px] py-1 transition-colors whitespace-nowrap cursor-pointer ${
+                    !isFriendly
+                      ? 'font-semibold text-[#111111]'
+                      : 'font-medium text-[#8E8E93] hover:text-[#52525B]'
+                  }`}
+                >
+                  Formal
+                </button>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isFriendly}
+                  aria-label="Chuyển giữa phong cách Formal và Thân thiện"
+                  onClick={() => onModeChange(isFriendly ? 'formal' : 'chat')}
+                  className="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full bg-[var(--cydia-accent)] transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)]"
+                >
+                  <span
+                    className={`inline-block h-4.5 w-4.5 transform rounded-full bg-[var(--cydia-switch-knob)] shadow-xs transition-transform duration-150 ${
+                      isFriendly ? 'translate-x-5.5' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onModeChange('chat')}
+                  className={`text-[13px] py-1 transition-colors whitespace-nowrap cursor-pointer ${
+                    isFriendly
+                      ? 'font-semibold text-[#111111]'
+                      : 'font-medium text-[#8E8E93] hover:text-[#52525B]'
+                  }`}
+                >
+                  Thân thiện
+                </button>
+              </div>
+            </div>
+          </section>
+
           {/* Voice Gender (Nữ / Nam) */}
           <section className="space-y-2.5">
             <span className="block text-[12px] font-semibold tracking-wider text-[#71717A] uppercase">

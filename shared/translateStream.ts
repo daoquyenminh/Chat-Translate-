@@ -244,7 +244,7 @@ export async function openTranslateStreamWithFallback(
   const contents =
     options.targetLang === 'vi'
       ? buildViTranslatePrompt(options.text)
-      : buildTranslatePrompt(options.text, options.regenerate);
+      : buildTranslatePrompt(options.text, options.regenerate, options.mode);
 
   let lastError: unknown = null;
 

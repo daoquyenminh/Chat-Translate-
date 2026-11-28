@@ -42,6 +42,8 @@ const SavedLessonsModal = lazy(() =>
 );
 
 const DEFAULT_MODE: TranslationMode = 'formal';
+const MODE_STORAGE_KEY = 'cydia_translate_mode_v1';
+const MODE_COOKIE_KEY = 'cydia_mode_v1';
 const VOICE_STORAGE_KEY = 'cydia_translate_voice_v1';
 const VOICE_COOKIE_KEY = 'cydia_voice_v1';
 const MESSAGES_STORAGE_KEY = 'cydia_translate_messages_v2';
@@ -55,6 +57,61 @@ interface ActiveStudyView {
   translatedText: string;
   mode: TranslationMode;
   data: StudyAnalysis | null;
+}
+
+function normalizeTranslationMode(raw: unknown): TranslationMode {
+  return raw === 'chat' ? 'chat' : DEFAULT_MODE;
+}
+
+function readModeCookie(): TranslationMode | null {
+  try {
+    const match = document.cookie
+      .split('; ')
+      .find((row) => row.startsWith(`${MODE_COOKIE_KEY}=`));
+    if (!match) return null;
+    const decoded = decodeURIComponent(match.slice(MODE_COOKIE_KEY.length + 1)).trim();
+    if (decoded === 'chat' || decoded === 'formal') return decoded;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistModeSetting(nextMode: TranslationMode): void {
+  const safe = normalizeTranslationMode(nextMode);
+  try {
+    window.localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(safe));
+  } catch {
+    // Ignore storage quota errors
+  }
+  try {
+    document.cookie = `${MODE_COOKIE_KEY}=${encodeURIComponent(safe)}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    // Ignore cookie errors
+  }
+}
+
+function loadSavedMode(): TranslationMode {
+  try {
+    const raw = window.localStorage.getItem(MODE_STORAGE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed === 'chat' || parsed === 'formal') return parsed;
+      } catch {
+        const trimmed = raw.trim();
+        if (trimmed === 'chat' || trimmed === 'formal') return trimmed;
+      }
+    }
+  } catch {
+    // Fall through to cookie backup
+  }
+  const fromCookie = readModeCookie();
+  if (fromCookie) {
+    persistModeSetting(fromCookie);
+    return fromCookie;
+  }
+  return DEFAULT_MODE;
 }
 
 function normalizeVoiceGender(raw: unknown): VoiceGender {
@@ -156,6 +213,7 @@ function purgeExpiredMessagesBeforeHydrate(): void {
 }
 
 purgeExpiredMessagesBeforeHydrate();
+const INITIAL_SAVED_MODE = loadSavedMode();
 const INITIAL_SAVED_VOICE = loadSavedVoiceGender();
 const INITIAL_SAVED_THEME = loadSavedTheme();
 applyThemeCssVars(INITIAL_SAVED_THEME);
@@ -176,6 +234,10 @@ function CydiaStarMark() {
 }
 
 export default function App() {
+  const [storedMode, setStoredMode] = useLocalStorage<TranslationMode>(
+    MODE_STORAGE_KEY,
+    INITIAL_SAVED_MODE
+  );
   const [storedVoiceGender, setStoredVoiceGender] = useLocalStorage<VoiceGender>(
     VOICE_STORAGE_KEY,
     INITIAL_SAVED_VOICE
@@ -200,9 +262,18 @@ export default function App() {
 
   const [todayKey, setTodayKey] = useState<string>(() => getLocalDateKey());
 
-  const mode: TranslationMode = DEFAULT_MODE;
+  const mode = normalizeTranslationMode(storedMode);
   const voiceGender = normalizeVoiceGender(storedVoiceGender);
   const theme = useMemo(() => normalizeTheme(storedTheme), [storedTheme]);
+
+  const handleModeChange = useCallback(
+    (nextMode: TranslationMode) => {
+      const safe = normalizeTranslationMode(nextMode);
+      persistModeSetting(safe);
+      setStoredMode(safe);
+    },
+    [setStoredMode]
+  );
 
   const handleThemeChange = useCallback(
     (nextTheme: ChatTheme) => {
@@ -1354,9 +1425,11 @@ export default function App() {
         <Suspense fallback={null}>
           <ThemeSettingsModal
             isOpen={showThemeSettings}
+            mode={mode}
             voiceGender={voiceGender}
             theme={theme}
             savedThemes={savedThemes}
+            onModeChange={handleModeChange}
             onVoiceGenderChange={handleVoiceGenderChange}
             onThemeChange={handleThemeChange}
             onSaveCustomTheme={handleSaveCustomTheme}

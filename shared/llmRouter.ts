@@ -146,7 +146,7 @@ export function parseModelList(override: string | undefined, defaults: readonly 
 
 export function buildTranslateCacheKey(options: TranslateRouterOptions): string {
   const normalized = options.text.trim().replace(/\s+/g, ' ');
-  return `tr:v2:${options.mode}:${options.targetLang}:${normalized}`;
+  return `tr:v5:${options.mode}:${options.targetLang}:${normalized}`;
 }
 
 export function buildStudyCacheKey(options: StudyRouterOptions): string {
@@ -249,7 +249,7 @@ function getTranslatePrompts(options: TranslateRouterOptions): {
   const userPrompt =
     options.targetLang === 'vi'
       ? buildViTranslatePrompt(options.text)
-      : buildTranslatePrompt(options.text, options.regenerate);
+      : buildTranslatePrompt(options.text, options.regenerate, options.mode);
   return { systemInstruction, userPrompt };
 }
 
