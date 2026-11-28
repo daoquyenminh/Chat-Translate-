@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { TargetLanguage, TranslationMode } from './shared/prompts';
 import {
   formatGeminiUserError,
+  generateSpeechAudio,
   generateStudyAnalysis,
   inspectGeminiError,
   openTranslateStreamWithFallback,
@@ -67,6 +68,16 @@ interface StudyBody {
 interface NormalizedStudyPayload {
   sourceText: string;
   translatedText: string;
+  mode: TranslationMode;
+}
+
+interface TtsBody {
+  text?: string;
+  mode?: TranslationMode;
+}
+
+interface NormalizedTtsPayload {
+  text: string;
   mode: TranslationMode;
 }
 
@@ -164,6 +175,7 @@ function missingKeyResponse(env: CloudflareEnv): Response {
 
 let cachedWorkerKey = '';
 let cachedWorkerClient: GoogleGenAI | null = null;
+let cachedWorkerTtsClient: GoogleGenAI | null = null;
 
 function getOrCreateClient(apiKey: string): GoogleGenAI {
   if (!cachedWorkerClient || cachedWorkerKey !== apiKey) {
@@ -176,14 +188,31 @@ function getOrCreateClient(apiKey: string): GoogleGenAI {
         },
       },
     });
+    cachedWorkerTtsClient = null;
   }
   return cachedWorkerClient;
 }
 
+function getOrCreateTtsClient(apiKey: string): GoogleGenAI {
+  if (!cachedWorkerTtsClient || cachedWorkerKey !== apiKey) {
+    cachedWorkerKey = apiKey;
+    cachedWorkerTtsClient = new GoogleGenAI({
+      apiKey,
+      apiVersion: 'v1beta',
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+  }
+  return cachedWorkerTtsClient;
+}
+
 async function forwardToUsProxy(
   env: CloudflareEnv,
-  pathname: '/api/translate' | '/api/study',
-  payload: NormalizedTranslatePayload | NormalizedStudyPayload
+  pathname: '/api/translate' | '/api/study' | '/api/tts',
+  payload: NormalizedTranslatePayload | NormalizedStudyPayload | NormalizedTtsPayload
 ): Promise<Response | null> {
   if (!env.GEMINI_PROXY) return null;
   const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
@@ -378,6 +407,76 @@ async function handleStudy(
   return runGeminiStudy(payload, env, allowProxyFallback);
 }
 
+async function runGeminiTts(
+  payload: NormalizedTtsPayload,
+  env: CloudflareEnv,
+  allowProxyFallback: boolean
+): Promise<Response> {
+  const apiKey = await resolveApiKey(env);
+  if (!apiKey) {
+    return missingKeyResponse(env);
+  }
+
+  try {
+    const ai = getOrCreateTtsClient(apiKey);
+    const speech = await generateSpeechAudio(ai, payload);
+    return jsonResponse(speech as unknown as Record<string, unknown>, 200, {
+      'Cache-Control': 'no-store',
+    });
+  } catch (err) {
+    const info = inspectGeminiError(err);
+
+    if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
+      const proxied = await forwardToUsProxy(env, '/api/tts', payload);
+      if (proxied) {
+        return proxied;
+      }
+    }
+
+    const mapped = formatGeminiUserError(info, 'cloudflare');
+    const extraHeaders = mapped.retryAfterSeconds
+      ? { 'Retry-After': String(mapped.retryAfterSeconds) }
+      : undefined;
+    return jsonResponse({ error: mapped.error }, mapped.status, extraHeaders);
+  }
+}
+
+async function handleTts(
+  request: CloudflareRequest,
+  env: CloudflareEnv,
+  allowProxyFallback: boolean
+): Promise<Response> {
+  let body: TtsBody;
+  try {
+    body = (await request.json()) as TtsBody;
+  } catch {
+    return jsonResponse({ error: 'Dữ liệu gửi lên không hợp lệ.' }, 400);
+  }
+
+  const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
+  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+
+  if (!rawText) {
+    return jsonResponse({ error: 'Thiếu nội dung cần đọc.' }, 400);
+  }
+
+  if (rawText.length > 2000) {
+    return jsonResponse({ error: 'Đoạn văn bản quá dài để đọc phát âm.' }, 400);
+  }
+
+  const payload: NormalizedTtsPayload = { text: rawText, mode };
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+
+  if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
+    const proxied = await forwardToUsProxy(env, '/api/tts', payload);
+    if (proxied) {
+      return proxied;
+    }
+  }
+
+  return runGeminiTts(payload, env, allowProxyFallback);
+}
+
 export class GeminiRegionProxy {
   private readonly env: CloudflareEnv;
 
@@ -394,6 +493,9 @@ export class GeminiRegionProxy {
     }
     if (request.method === 'POST' && url.pathname === '/api/study') {
       return handleStudy(request as CloudflareRequest, this.env, false);
+    }
+    if (request.method === 'POST' && url.pathname === '/api/tts') {
+      return handleTts(request as CloudflareRequest, this.env, false);
     }
     return handleTranslate(request as CloudflareRequest, this.env, false);
   }
@@ -425,6 +527,10 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/study') {
       return handleStudy(request as CloudflareRequest, env, true);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/tts') {
+      return handleTts(request as CloudflareRequest, env, true);
     }
 
     const assetResponse = await env.ASSETS.fetch(request);

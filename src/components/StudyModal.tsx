@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, Bookmark, BookmarkCheck, Check, Copy, RotateCcw, X } from 'lucide-react';
+import {
+  ArrowRight,
+  Bookmark,
+  BookmarkCheck,
+  Check,
+  Copy,
+  Loader2,
+  RotateCcw,
+  Volume2,
+  X,
+} from 'lucide-react';
 import { StudyAnalysis, StudyHighlightSegment, TranslationMode } from '../types';
 import { copyTextToClipboard } from '../utils/formatters';
 
@@ -12,6 +22,9 @@ interface StudyModalProps {
   isLoading: boolean;
   error: string | null;
   isSaved: boolean;
+  speakingKey: string | null;
+  loadingSpeechKey: string | null;
+  onSpeak: (key: string, text: string, mode?: TranslationMode) => void;
   onToggleSave: () => void;
   onRetry: () => void;
   onClose: () => void;
@@ -69,6 +82,9 @@ export function StudyModal({
   isLoading,
   error,
   isSaved,
+  speakingKey,
+  loadingSpeechKey,
+  onSpeak,
   onToggleSave,
   onRetry,
   onClose,
@@ -276,23 +292,42 @@ export function StudyModal({
                         <span className="text-[12px] font-medium text-[#71717A]">
                           Câu tiếng Anh chuẩn
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleCopy('corrected', data.correctedSentence)}
-                          className="inline-flex items-center gap-1 text-[12px] font-medium text-[#52525B] hover:text-[#111111] transition-colors cursor-pointer py-0.5"
-                        >
-                          {copiedKey === 'corrected' ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={2.3} />
-                              <span className="text-emerald-700">Đã copy</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3.5 h-3.5" strokeWidth={1.9} />
-                              <span>Copy</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => onSpeak('study-main', data.correctedSentence, mode)}
+                            className={`inline-flex items-center gap-1 text-[12px] font-medium transition-colors cursor-pointer py-0.5 ${
+                              speakingKey === 'study-main'
+                                ? 'text-[var(--cydia-accent)]'
+                                : 'text-[#52525B] hover:text-[#111111]'
+                            }`}
+                          >
+                            {loadingSpeechKey === 'study-main' ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                            ) : (
+                              <Volume2 className="w-3.5 h-3.5" strokeWidth={2} />
+                            )}
+                            <span>{speakingKey === 'study-main' ? 'Đang đọc' : 'Nghe'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleCopy('corrected', data.correctedSentence)}
+                            className="inline-flex items-center gap-1 text-[12px] font-medium text-[#52525B] hover:text-[#111111] transition-colors cursor-pointer py-0.5"
+                          >
+                            {copiedKey === 'corrected' ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={2.3} />
+                                <span className="text-emerald-700">Đã copy</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" strokeWidth={1.9} />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </div>
                       <p className="text-[15px] leading-[1.6] text-[#111111] whitespace-pre-wrap break-words">
                         {renderSegments(data.correctedSegments)}

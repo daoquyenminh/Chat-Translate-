@@ -12,6 +12,7 @@ import { INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
 import { copyTextToClipboard } from './utils/formatters';
+import { createPlayableAudioUrl } from './utils/audio';
 import {
   THEME_STORAGE_KEY,
   applyThemeCssVars,
@@ -244,9 +245,15 @@ export default function App() {
   const [studyLoading, setStudyLoading] = useState(false);
   const [studyError, setStudyError] = useState<string | null>(null);
 
+  const [speakingKey, setSpeakingKey] = useState<string | null>(null);
+  const [loadingSpeechKey, setLoadingSpeechKey] = useState<string | null>(null);
+
   const copyTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const studyAbortRef = useRef<AbortController | null>(null);
+  const ttsAbortRef = useRef<AbortController | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsCacheRef = useRef<Map<string, string>>(new Map());
 
   const visibleMessages = useMemo(
     () =>
@@ -988,7 +995,134 @@ export default function App() {
     [setSavedLessons]
   );
 
+  const stopSpeech = useCallback(() => {
+    if (ttsAbortRef.current) {
+      ttsAbortRef.current.abort();
+      ttsAbortRef.current = null;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    setSpeakingKey(null);
+    setLoadingSpeechKey(null);
+  }, []);
+
+  useEffect(() => {
+    const cache = ttsCacheRef.current;
+    return () => {
+      if (ttsAbortRef.current) {
+        ttsAbortRef.current.abort();
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+      cache.forEach((url) => URL.revokeObjectURL(url));
+      cache.clear();
+    };
+  }, []);
+
+  const handleSpeak = useCallback(
+    async (key: string, text: string, targetMode?: TranslationMode) => {
+      const cleanText = text.trim();
+      if (!cleanText) return;
+
+      // Toggle off if already playing or loading the same item
+      if (speakingKey === key || loadingSpeechKey === key) {
+        stopSpeech();
+        return;
+      }
+
+      stopSpeech();
+
+      if (!audioRef.current) {
+        audioRef.current = new Audio();
+        audioRef.current.setAttribute('playsinline', 'true');
+      }
+      const audio = audioRef.current;
+
+      const resolvedMode = targetMode ?? mode;
+      const cacheKey = `${resolvedMode}:${cleanText}`;
+      const cachedUrl = ttsCacheRef.current.get(cacheKey);
+
+      const playUrl = async (url: string) => {
+        audio.onended = () => {
+          setSpeakingKey((prev) => (prev === key ? null : prev));
+        };
+        audio.onerror = () => {
+          setSpeakingKey((prev) => (prev === key ? null : prev));
+        };
+        audio.src = url;
+        audio.currentTime = 0;
+        setSpeakingKey(key);
+        try {
+          await audio.play();
+        } catch {
+          setSpeakingKey((prev) => (prev === key ? null : prev));
+        }
+      };
+
+      if (cachedUrl) {
+        await playUrl(cachedUrl);
+        return;
+      }
+
+      // Prime audio element inside the user gesture for iOS Safari autoplay policy
+      try {
+        audio.load();
+      } catch {
+        // Ignore load errors
+      }
+
+      const controller = new AbortController();
+      ttsAbortRef.current = controller;
+      setLoadingSpeechKey(key);
+
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({ text: cleanText, mode: resolvedMode }),
+        });
+
+        if (!res.ok) {
+          return;
+        }
+
+        const data = (await res.json()) as { audioBase64?: string; mimeType?: string };
+        if (!data.audioBase64 || ttsAbortRef.current !== controller) {
+          return;
+        }
+
+        const objectUrl = createPlayableAudioUrl(data.audioBase64, data.mimeType);
+        if (ttsCacheRef.current.size >= 40) {
+          const oldestKey = ttsCacheRef.current.keys().next().value;
+          if (oldestKey) {
+            const oldUrl = ttsCacheRef.current.get(oldestKey);
+            if (oldUrl) URL.revokeObjectURL(oldUrl);
+            ttsCacheRef.current.delete(oldestKey);
+          }
+        }
+        ttsCacheRef.current.set(cacheKey, objectUrl);
+
+        setLoadingSpeechKey(null);
+        await playUrl(objectUrl);
+      } catch {
+        // Silently stop on abort or network failure
+      } finally {
+        if (ttsAbortRef.current === controller) {
+          ttsAbortRef.current = null;
+          setLoadingSpeechKey((prev) => (prev === key ? null : prev));
+        }
+      }
+    },
+    [loadingSpeechKey, mode, speakingKey, stopSpeech]
+  );
+
   const handleClearChat = () => {
+    stopSpeech();
     handleCloseStudy();
     setMessages([]);
     try {
@@ -1044,12 +1178,15 @@ export default function App() {
         streamingMessageId={streamingMessageId}
         translatingViId={translatingViId}
         copiedMessageId={copiedMessageId}
+        speakingKey={speakingKey}
+        loadingSpeechKey={loadingSpeechKey}
         onCopyMessage={triggerCopy}
         onSend={handleSend}
         onStop={handleStop}
         onRegenerate={handleRegenerate}
         onTranslateToVi={handleTranslateToVi}
         onOpenStudy={handleOpenStudy}
+        onSpeak={(key, text, msgMode) => void handleSpeak(key, text, msgMode)}
       />
 
       {studyView && (
@@ -1063,6 +1200,9 @@ export default function App() {
             isLoading={studyLoading}
             error={studyError}
             isSaved={Boolean(activeSavedLesson)}
+            speakingKey={speakingKey}
+            loadingSpeechKey={loadingSpeechKey}
+            onSpeak={(key, text, targetMode) => void handleSpeak(key, text, targetMode)}
             onToggleSave={handleToggleSaveCurrentLesson}
             onRetry={() => void runStudyAnalysis(studyView, true)}
             onClose={handleCloseStudy}

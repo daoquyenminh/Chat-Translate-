@@ -7,6 +7,7 @@ import { GoogleGenAI } from '@google/genai';
 import { TargetLanguage, TranslationMode } from './shared/prompts';
 import {
   formatGeminiUserError,
+  generateSpeechAudio,
   generateStudyAnalysis,
   inspectGeminiError,
   openTranslateStreamWithFallback,
@@ -31,7 +32,13 @@ interface StudyRequestBody {
   mode?: TranslationMode;
 }
 
+interface TtsRequestBody {
+  text?: string;
+  mode?: TranslationMode;
+}
+
 let cachedClient: GoogleGenAI | null = null;
+let cachedTtsClient: GoogleGenAI | null = null;
 
 function getGenAIClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -49,6 +56,25 @@ function getGenAIClient(): GoogleGenAI {
     });
   }
   return cachedClient;
+}
+
+function getTtsGenAIClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('MISSING_API_KEY');
+  }
+  if (!cachedTtsClient) {
+    cachedTtsClient = new GoogleGenAI({
+      apiKey,
+      apiVersion: 'v1beta',
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+  }
+  return cachedTtsClient;
 }
 
 async function startServer(): Promise<void> {
@@ -172,6 +198,46 @@ async function startServer(): Promise<void> {
         res.setHeader('Retry-After', String(mapped.retryAfterSeconds));
       }
       console.error('[/api/study] Gemini error:', err);
+      res.status(mapped.status).json({ error: mapped.error });
+    }
+  });
+
+  app.post('/api/tts', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as TtsRequestBody;
+    const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
+    const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+
+    if (!rawText) {
+      res.status(400).json({ error: 'Thiếu nội dung cần đọc.' });
+      return;
+    }
+
+    if (rawText.length > 2000) {
+      res.status(400).json({ error: 'Đoạn văn bản quá dài để đọc phát âm.' });
+      return;
+    }
+
+    try {
+      const ai = getTtsGenAIClient();
+      const speech = await generateSpeechAudio(ai, { text: rawText, mode });
+
+      res.setHeader('X-Cydia-Translate', '1');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).json(speech);
+    } catch (err: unknown) {
+      if ((err as { message?: string })?.message === 'MISSING_API_KEY') {
+        res.status(500).json({
+          error: 'Chưa cấu hình GEMINI_API_KEY trong Settings > Secrets.',
+        });
+        return;
+      }
+
+      const info = inspectGeminiError(err);
+      const mapped = formatGeminiUserError(info, 'server');
+      if (mapped.retryAfterSeconds) {
+        res.setHeader('Retry-After', String(mapped.retryAfterSeconds));
+      }
+      console.error('[/api/tts] Gemini error:', err);
       res.status(mapped.status).json({ error: mapped.error });
     }
   });

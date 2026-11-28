@@ -8,6 +8,7 @@ import {
   Loader2,
   RotateCcw,
   Square,
+  Volume2,
 } from 'lucide-react';
 import { ChatMessage } from '../types';
 import { formatDateGroup, formatTime } from '../utils/formatters';
@@ -18,12 +19,15 @@ interface ChatPanelProps {
   streamingMessageId: string | null;
   translatingViId: string | null;
   copiedMessageId: string | null;
+  speakingKey: string | null;
+  loadingSpeechKey: string | null;
   onCopyMessage: (messageId: string, text: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
   onRegenerate: (messageId: string, sourceText: string) => void;
   onTranslateToVi: (messageId: string) => void;
   onOpenStudy: (messageId: string) => void;
+  onSpeak: (key: string, text: string, mode?: 'chat' | 'formal') => void;
 }
 
 export const ChatPanel = React.memo(function ChatPanel({
@@ -32,12 +36,15 @@ export const ChatPanel = React.memo(function ChatPanel({
   streamingMessageId,
   translatingViId,
   copiedMessageId,
+  speakingKey,
+  loadingSpeechKey,
   onCopyMessage,
   onSend,
   onStop,
   onRegenerate,
   onTranslateToVi,
   onOpenStudy,
+  onSpeak,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [pasteFeedback, setPasteFeedback] = useState<'pasted' | 'empty' | 'denied' | null>(null);
@@ -262,6 +269,38 @@ export const ChatPanel = React.memo(function ChatPanel({
 
                     {!msg.isError && !isCurrentlyStreaming && msg.text.trim().length > 0 && (
                       <div className="flex items-center gap-0.5 shrink-0 pb-0.5">
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => onSpeak(`msg-${msg.id}`, msg.text, msg.mode)}
+                          aria-label={
+                            speakingKey === `msg-${msg.id}`
+                              ? 'Dừng phát giọng đọc'
+                              : 'Nghe phát âm giọng nữ bản xứ'
+                          }
+                          title={
+                            speakingKey === `msg-${msg.id}`
+                              ? 'Dừng đọc'
+                              : 'Nghe phát âm giọng nữ bản xứ'
+                          }
+                          className={`inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${
+                            speakingKey === `msg-${msg.id}`
+                              ? 'text-[var(--cydia-accent)] bg-black/5'
+                              : 'text-[var(--cydia-chat-muted)] hover:text-[var(--cydia-chat-strong)] hover:bg-black/5'
+                          }`}
+                        >
+                          {loadingSpeechKey === `msg-${msg.id}` ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                          ) : (
+                            <Volume2
+                              className={`w-3.5 h-3.5 ${
+                                speakingKey === `msg-${msg.id}` ? 'animate-pulse' : ''
+                              }`}
+                              strokeWidth={2}
+                            />
+                          )}
+                        </button>
+
                         <button
                           type="button"
                           disabled={isLoading || (translatingViId !== null && translatingViId !== msg.id)}

@@ -5,6 +5,8 @@ import {
   STUDY_SYSTEM_INSTRUCTION,
   StudyAnalysis,
   TRANSLATE_MODEL,
+  TTS_MODEL,
+  TTS_VOICE_NAME,
   TargetLanguage,
   TranslationMode,
   VI_SYSTEM_INSTRUCTION,
@@ -547,4 +549,84 @@ export async function generateStudyAnalysis(
   }
 
   throw lastError ?? new Error('STUDY_FAILED');
+}
+
+export interface GeneratedSpeechResult {
+  audioBase64: string;
+  mimeType: string;
+}
+
+export async function generateSpeechAudio(
+  ai: GoogleGenAI,
+  options: {
+    text: string;
+    mode?: TranslationMode;
+  }
+): Promise<GeneratedSpeechResult> {
+  const style =
+    options.mode === 'formal'
+      ? 'Natural native American English female speaker, clear, warm, articulate pronunciation'
+      : 'Natural native American English female speaker, relaxed, friendly everyday local pronunciation';
+
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: TTS_MODEL,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: options.text,
+                speechMetadata: {
+                  style,
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: TTS_VOICE_NAME },
+            },
+          },
+        },
+      });
+
+      const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+      const audioBase64 = inlineData?.data ?? '';
+      if (!audioBase64) {
+        throw new Error('EMPTY_TTS_OUTPUT');
+      }
+
+      return {
+        audioBase64,
+        mimeType: inlineData?.mimeType || 'audio/wav',
+      };
+    } catch (err: unknown) {
+      lastError = err;
+      const info = inspectGeminiError(err);
+
+      if (info.isAuthError || info.isLocationUnsupported || info.isDailyQuota) {
+        throw err;
+      }
+
+      if (attempt === 0 && (info.isRateLimit || info.isTransient)) {
+        const retryMs =
+          info.retryAfterSeconds !== null && info.retryAfterSeconds * 1000 <= 4000
+            ? Math.max(1200, info.retryAfterSeconds * 1000)
+            : 1500;
+        await sleep(retryMs);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError ?? new Error('TTS_FAILED');
 }
