@@ -25,6 +25,14 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+          const distAiStudioDir = path.resolve(distDir, 'assets/aistudio');
+          if (fs.existsSync(distAiStudioDir)) {
+            for (const entry of fs.readdirSync(distAiStudioDir)) {
+              if (entry !== 'Logo_robot_1x_435fc3c3.png') {
+                fs.rmSync(path.join(distAiStudioDir, entry), {force: true});
+              }
+            }
+          }
         },
       },
     ],

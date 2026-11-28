@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+public/assets/aistudio/*
+!public/assets/aistudio/Logo_robot_1x_435fc3c3.png
