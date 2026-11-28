@@ -163,8 +163,8 @@ applyThemeCssVars(INITIAL_SAVED_THEME);
 function CydiaStarMark() {
   return (
     <img
-      src="/assets/aistudio/Logo_robot_1x_435fc3c3.png"
-      alt="Cydia Translate logo"
+      src="/assets/aistudio/Logo_robot_meme_2x_91430530.png"
+      alt="Cydia Chatbot logo"
       width={40}
       height={40}
       decoding="async"
@@ -1255,8 +1255,16 @@ export default function App() {
         <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-[60px] sm:h-[64px]">
           <div className="flex items-center gap-3 min-w-0">
             <CydiaStarMark />
-            <h1 className="text-[17px] font-semibold tracking-tight text-[#111111] whitespace-nowrap truncate">
-              Cydia Translate
+            <h1 className="min-w-0 flex flex-col sm:flex-row sm:items-baseline sm:gap-1.5 leading-tight">
+              <span className="text-[16px] sm:text-[17px] font-semibold tracking-tight text-[#111111] truncate">
+                Cydia Chatbot
+              </span>
+              <span className="hidden sm:inline text-[#A1A1AA] font-normal" aria-hidden="true">
+                –
+              </span>
+              <span className="text-[11.5px] sm:text-[14px] font-medium text-[#71717A] truncate">
+                Translate &amp; Learn English
+              </span>
             </h1>
           </div>
 
