@@ -3,9 +3,9 @@ import { ChatMessage, ChatTheme, ThemePreset } from './types';
 export const INITIAL_MESSAGES: ChatMessage[] = [];
 
 export const DEFAULT_THEME: ChatTheme = {
-  accentColor: '#111111',
+  accentColor: '#DA0B0B',
   userBubbleColor: '#111111',
-  botBubbleColor: '#FFFFFF',
+  botBubbleColor: '#31B47B',
   chatBgColor: '#FAFAFA',
 };
 

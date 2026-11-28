@@ -3,14 +3,14 @@
 :root {
   --app-vh: 100dvh;
   --app-offset-top: 0px;
-  --cydia-accent: #111111;
+  --cydia-accent: #DA0B0B;
   --cydia-accent-text: #FFFFFF;
   --cydia-switch-knob: #FFFFFF;
   --cydia-user-bg: #111111;
   --cydia-user-text: #FFFFFF;
-  --cydia-bot-bg: #FFFFFF;
-  --cydia-bot-text: #111111;
-  --cydia-bot-border: #EAEAEA;
+  --cydia-bot-bg: #31B47B;
+  --cydia-bot-text: #FFFFFF;
+  --cydia-bot-border: rgba(255, 255, 255, 0.12);
   --cydia-chat-bg: #FAFAFA;
   --cydia-chat-muted: #8E8E93;
   --cydia-chat-strong: #111111;
