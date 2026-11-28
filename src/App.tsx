@@ -163,7 +163,7 @@ applyThemeCssVars(INITIAL_SAVED_THEME);
 function CydiaStarMark() {
   return (
     <img
-      src="/assets/aistudio/Logo_robot_meme_2x_91430530.png"
+      src="/assets/aistudio/Logo_robot_meme_2x__1__220cb57d.png"
       alt="Cydia Chatbot logo"
       width={40}
       height={40}
