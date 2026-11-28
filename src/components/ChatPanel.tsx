@@ -389,12 +389,6 @@ export const ChatPanel = React.memo(function ChatPanel({
 
                   <div className="mt-1.5 ml-1 flex items-center gap-1.5 text-[11px] text-[var(--cydia-chat-muted)] tabular-nums">
                     <span>{formatTime(msg.createdAt)}</span>
-                    {msg.mode && !msg.isError && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>{msg.mode === 'formal' ? 'Formal' : 'Chat'}</span>
-                      </>
-                    )}
                     {isCopied && (
                       <>
                         <span aria-hidden="true">·</span>
