@@ -7,6 +7,7 @@ import { GoogleGenAI } from '@google/genai';
 import { TargetLanguage, TranslationMode } from './shared/prompts';
 import {
   formatGeminiUserError,
+  generateStudyAnalysis,
   inspectGeminiError,
   openTranslateStreamWithFallback,
   sanitizeInputText,
@@ -22,6 +23,12 @@ interface TranslateRequestBody {
   mode?: TranslationMode;
   targetLang?: TargetLanguage;
   regenerate?: boolean;
+}
+
+interface StudyRequestBody {
+  sourceText?: string;
+  translatedText?: string;
+  mode?: TranslationMode;
 }
 
 let cachedClient: GoogleGenAI | null = null;
@@ -115,6 +122,56 @@ async function startServer(): Promise<void> {
       }
 
       console.error('[/api/translate] Gemini error:', err);
+      res.status(mapped.status).json({ error: mapped.error });
+    }
+  });
+
+  app.post('/api/study', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as StudyRequestBody;
+    const sourceText =
+      typeof body.sourceText === 'string' ? sanitizeInputText(body.sourceText) : '';
+    const translatedText =
+      typeof body.translatedText === 'string' ? sanitizeInputText(body.translatedText) : '';
+    const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+
+    if (!sourceText && !translatedText) {
+      res.status(400).json({ error: 'Thiếu nội dung câu cần phân tích.' });
+      return;
+    }
+
+    const safeSource = sourceText || translatedText;
+    const safeTranslated = translatedText || sourceText;
+
+    if (safeSource.length > 4000 || safeTranslated.length > 4000) {
+      res.status(400).json({ error: 'Đoạn văn bản quá dài để phân tích học bài.' });
+      return;
+    }
+
+    try {
+      const ai = getGenAIClient();
+      const analysis = await generateStudyAnalysis(ai, {
+        sourceText: safeSource,
+        translatedText: safeTranslated,
+        mode,
+      });
+
+      res.setHeader('X-Cydia-Translate', '1');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).json(analysis);
+    } catch (err: unknown) {
+      if ((err as { message?: string })?.message === 'MISSING_API_KEY') {
+        res.status(500).json({
+          error: 'Chưa cấu hình GEMINI_API_KEY trong Settings > Secrets.',
+        });
+        return;
+      }
+
+      const info = inspectGeminiError(err);
+      const mapped = formatGeminiUserError(info, 'server');
+      if (mapped.retryAfterSeconds) {
+        res.setHeader('Retry-After', String(mapped.retryAfterSeconds));
+      }
+      console.error('[/api/study] Gemini error:', err);
       res.status(mapped.status).json({ error: mapped.error });
     }
   });

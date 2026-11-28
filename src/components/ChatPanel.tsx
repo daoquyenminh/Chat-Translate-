@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   ArrowUp,
+  BookOpen,
   Check,
   ClipboardPaste,
   Languages,
@@ -22,6 +23,7 @@ interface ChatPanelProps {
   onStop: () => void;
   onRegenerate: (messageId: string, sourceText: string) => void;
   onTranslateToVi: (messageId: string) => void;
+  onOpenStudy: (messageId: string) => void;
 }
 
 export const ChatPanel = React.memo(function ChatPanel({
@@ -35,6 +37,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onStop,
   onRegenerate,
   onTranslateToVi,
+  onOpenStudy,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [pasteFeedback, setPasteFeedback] = useState<'pasted' | 'empty' | 'denied' | null>(null);
@@ -258,28 +261,45 @@ export const ChatPanel = React.memo(function ChatPanel({
                     </div>
 
                     {!msg.isError && !isCurrentlyStreaming && msg.text.trim().length > 0 && (
-                      <button
-                        type="button"
-                        disabled={isLoading || (translatingViId !== null && translatingViId !== msg.id)}
-                        onClick={() => onTranslateToVi(msg.id)}
-                        aria-label="Dịch sang tiếng Việt"
-                        title={
-                          msg.showViTranslation && msg.viTranslation
-                            ? 'Ẩn bản dịch tiếng Việt'
-                            : 'Dịch sang tiếng Việt'
-                        }
-                        className={`inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 pb-0.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${
-                          msg.showViTranslation && msg.viTranslation
-                            ? 'text-[var(--cydia-chat-strong)] bg-black/5'
-                            : 'text-[var(--cydia-chat-muted)] hover:text-[var(--cydia-chat-strong)] hover:bg-black/5'
-                        }`}
-                      >
-                        {translatingViId === msg.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
-                        ) : (
-                          <Languages className="w-3.5 h-3.5" strokeWidth={1.9} />
-                        )}
-                      </button>
+                      <div className="flex items-center gap-0.5 shrink-0 pb-0.5">
+                        <button
+                          type="button"
+                          disabled={isLoading || (translatingViId !== null && translatingViId !== msg.id)}
+                          onClick={() => onTranslateToVi(msg.id)}
+                          aria-label="Dịch sang tiếng Việt"
+                          title={
+                            msg.showViTranslation && msg.viTranslation
+                              ? 'Ẩn bản dịch tiếng Việt'
+                              : 'Dịch sang tiếng Việt'
+                          }
+                          className={`inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${
+                            msg.showViTranslation && msg.viTranslation
+                              ? 'text-[var(--cydia-chat-strong)] bg-black/5'
+                              : 'text-[var(--cydia-chat-muted)] hover:text-[var(--cydia-chat-strong)] hover:bg-black/5'
+                          }`}
+                        >
+                          {translatingViId === msg.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                          ) : (
+                            <Languages className="w-3.5 h-3.5" strokeWidth={1.9} />
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => onOpenStudy(msg.id)}
+                          aria-label="Học bài: phân tích ngữ pháp & cách dùng"
+                          title="Học bài: sửa lỗi, ngữ cảnh & câu thay thế"
+                          className={`inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${
+                            msg.studyData
+                              ? 'text-[var(--cydia-chat-strong)] bg-black/5'
+                              : 'text-[var(--cydia-chat-muted)] hover:text-[var(--cydia-chat-strong)] hover:bg-black/5'
+                          }`}
+                        >
+                          <BookOpen className="w-3.5 h-3.5" strokeWidth={1.9} />
+                        </button>
+                      </div>
                     )}
 
                     {msg.isError && msg.sourceText && (

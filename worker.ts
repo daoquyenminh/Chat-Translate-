@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { TargetLanguage, TranslationMode } from './shared/prompts';
 import {
   formatGeminiUserError,
+  generateStudyAnalysis,
   inspectGeminiError,
   openTranslateStreamWithFallback,
   sanitizeInputText,
@@ -55,6 +56,18 @@ interface NormalizedTranslatePayload {
   mode: TranslationMode;
   targetLang: TargetLanguage;
   regenerate?: boolean;
+}
+
+interface StudyBody {
+  sourceText?: string;
+  translatedText?: string;
+  mode?: TranslationMode;
+}
+
+interface NormalizedStudyPayload {
+  sourceText: string;
+  translatedText: string;
+  mode: TranslationMode;
 }
 
 // Cloudflare edge PoPs where Google Gemini API returns HTTP 400 (User location is not supported)
@@ -169,12 +182,13 @@ function getOrCreateClient(apiKey: string): GoogleGenAI {
 
 async function forwardToUsProxy(
   env: CloudflareEnv,
-  payload: NormalizedTranslatePayload
+  pathname: '/api/translate' | '/api/study',
+  payload: NormalizedTranslatePayload | NormalizedStudyPayload
 ): Promise<Response | null> {
   if (!env.GEMINI_PROXY) return null;
   const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
   const stub = env.GEMINI_PROXY.get(id, { locationHint: 'wnam' });
-  const proxyReq = new Request('https://gemini-proxy.internal/api/translate', {
+  const proxyReq = new Request(`https://gemini-proxy.internal${pathname}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -228,7 +242,7 @@ async function runGeminiTranslation(
     const info = inspectGeminiError(err);
 
     if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
-      const proxied = await forwardToUsProxy(env, payload);
+      const proxied = await forwardToUsProxy(env, '/api/translate', payload);
       if (proxied) {
         return proxied;
       }
@@ -275,13 +289,93 @@ async function handleTranslate(
   const colo = (request.cf?.colo ?? '').toUpperCase();
 
   if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
-    const proxied = await forwardToUsProxy(env, payload);
+    const proxied = await forwardToUsProxy(env, '/api/translate', payload);
     if (proxied) {
       return proxied;
     }
   }
 
   return runGeminiTranslation(payload, env, allowProxyFallback);
+}
+
+async function runGeminiStudy(
+  payload: NormalizedStudyPayload,
+  env: CloudflareEnv,
+  allowProxyFallback: boolean
+): Promise<Response> {
+  const apiKey = await resolveApiKey(env);
+  if (!apiKey) {
+    return missingKeyResponse(env);
+  }
+
+  try {
+    const ai = getOrCreateClient(apiKey);
+    const analysis = await generateStudyAnalysis(ai, payload);
+    return jsonResponse(analysis as unknown as Record<string, unknown>, 200, {
+      'Cache-Control': 'no-store',
+    });
+  } catch (err) {
+    const info = inspectGeminiError(err);
+
+    if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
+      const proxied = await forwardToUsProxy(env, '/api/study', payload);
+      if (proxied) {
+        return proxied;
+      }
+    }
+
+    const mapped = formatGeminiUserError(info, 'cloudflare');
+    const extraHeaders = mapped.retryAfterSeconds
+      ? { 'Retry-After': String(mapped.retryAfterSeconds) }
+      : undefined;
+    return jsonResponse({ error: mapped.error }, mapped.status, extraHeaders);
+  }
+}
+
+async function handleStudy(
+  request: CloudflareRequest,
+  env: CloudflareEnv,
+  allowProxyFallback: boolean
+): Promise<Response> {
+  let body: StudyBody;
+  try {
+    body = (await request.json()) as StudyBody;
+  } catch {
+    return jsonResponse({ error: 'Dữ liệu gửi lên không hợp lệ.' }, 400);
+  }
+
+  const sourceText =
+    typeof body.sourceText === 'string' ? sanitizeInputText(body.sourceText) : '';
+  const translatedText =
+    typeof body.translatedText === 'string' ? sanitizeInputText(body.translatedText) : '';
+  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+
+  if (!sourceText && !translatedText) {
+    return jsonResponse({ error: 'Thiếu nội dung câu cần phân tích.' }, 400);
+  }
+
+  const safeSource = sourceText || translatedText;
+  const safeTranslated = translatedText || sourceText;
+
+  if (safeSource.length > 4000 || safeTranslated.length > 4000) {
+    return jsonResponse({ error: 'Đoạn văn bản quá dài để phân tích học bài.' }, 400);
+  }
+
+  const payload: NormalizedStudyPayload = {
+    sourceText: safeSource,
+    translatedText: safeTranslated,
+    mode,
+  };
+  const colo = (request.cf?.colo ?? '').toUpperCase();
+
+  if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
+    const proxied = await forwardToUsProxy(env, '/api/study', payload);
+    if (proxied) {
+      return proxied;
+    }
+  }
+
+  return runGeminiStudy(payload, env, allowProxyFallback);
 }
 
 export class GeminiRegionProxy {
@@ -297,6 +391,9 @@ export class GeminiRegionProxy {
       const apiKey = await resolveApiKey(this.env);
       if (apiKey) getOrCreateClient(apiKey);
       return new Response(null, { status: 204 });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/study') {
+      return handleStudy(request as CloudflareRequest, this.env, false);
     }
     return handleTranslate(request as CloudflareRequest, this.env, false);
   }
@@ -324,6 +421,10 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/translate') {
       return handleTranslate(request as CloudflareRequest, env, true);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/study') {
+      return handleStudy(request as CloudflareRequest, env, true);
     }
 
     const assetResponse = await env.ASSETS.fetch(request);

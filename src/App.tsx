@@ -1,6 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
-import { Settings } from 'lucide-react';
-import { ChatMessage, ChatTheme, ThemePreset, TranslationMode } from './types';
+import { Bookmark, Settings } from 'lucide-react';
+import {
+  ChatMessage,
+  ChatTheme,
+  SavedLesson,
+  StudyAnalysis,
+  ThemePreset,
+  TranslationMode,
+} from './types';
 import { INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
@@ -17,10 +24,28 @@ const ThemeSettingsModal = lazy(() =>
   import('./components/ThemeSettingsModal').then((m) => ({ default: m.ThemeSettingsModal }))
 );
 
+const StudyModal = lazy(() =>
+  import('./components/StudyModal').then((m) => ({ default: m.StudyModal }))
+);
+
+const SavedLessonsModal = lazy(() =>
+  import('./components/SavedLessonsModal').then((m) => ({ default: m.SavedLessonsModal }))
+);
+
 const MODE_STORAGE_KEY = 'cydia_translate_mode_v2';
 const MODE_COOKIE_KEY = 'cydia_mode_v1';
 const MESSAGES_STORAGE_KEY = 'cydia_translate_messages_v2';
 const MESSAGES_DAY_STORAGE_KEY = 'cydia_translate_messages_day_v1';
+const SAVED_LESSONS_STORAGE_KEY = 'cydia_translate_saved_lessons_v1';
+
+interface ActiveStudyView {
+  messageId?: string;
+  lessonId?: string;
+  sourceText: string;
+  translatedText: string;
+  mode: TranslationMode;
+  data: StudyAnalysis | null;
+}
 
 function normalizeMode(raw: unknown): TranslationMode {
   return raw === 'formal' ? 'formal' : 'chat';
@@ -153,6 +178,11 @@ export default function App() {
     'cydia_translate_saved_themes_v1',
     []
   );
+  // Permanent saved lessons — never cleared by daily 00:00 reset or Clear Chat
+  const [savedLessons, setSavedLessons] = useLocalStorage<SavedLesson[]>(
+    SAVED_LESSONS_STORAGE_KEY,
+    []
+  );
   const [messages, setMessages] = useLocalStorage<ChatMessage[]>(
     MESSAGES_STORAGE_KEY,
     INITIAL_MESSAGES
@@ -208,9 +238,15 @@ export default function App() {
   const [translatingViId, setTranslatingViId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [showThemeSettings, setShowThemeSettings] = useState(false);
+  const [showSavedLessons, setShowSavedLessons] = useState(false);
+
+  const [studyView, setStudyView] = useState<ActiveStudyView | null>(null);
+  const [studyLoading, setStudyLoading] = useState(false);
+  const [studyError, setStudyError] = useState<string | null>(null);
 
   const copyTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const studyAbortRef = useRef<AbortController | null>(null);
 
   const visibleMessages = useMemo(
     () =>
@@ -626,7 +662,7 @@ export default function App() {
       setMessages((curr) =>
         curr.map((m) =>
           m.id === messageId
-            ? { ...m, text: '', mode: activeMode, isError: false }
+            ? { ...m, text: '', mode: activeMode, isError: false, studyData: undefined }
             : m
         )
       );
@@ -764,7 +800,196 @@ export default function App() {
     [isLoading, messages, mode, setMessages, translatingViId]
   );
 
+  const findMatchingSavedLesson = useCallback(
+    (sourceText: string, translatedText: string, lessonId?: string): SavedLesson | undefined => {
+      if (lessonId) {
+        const byId = savedLessons.find((l) => l.id === lessonId);
+        if (byId) return byId;
+      }
+      const normSrc = sourceText.trim().toLowerCase();
+      const normTr = translatedText.trim().toLowerCase();
+      return savedLessons.find(
+        (l) =>
+          l.sourceText.trim().toLowerCase() === normSrc &&
+          l.translatedText.trim().toLowerCase() === normTr
+      );
+    },
+    [savedLessons]
+  );
+
+  const runStudyAnalysis = useCallback(
+    async (target: ActiveStudyView, forceRefresh = false) => {
+      if (!forceRefresh && target.data) {
+        setStudyLoading(false);
+        setStudyError(null);
+        return;
+      }
+
+      if (studyAbortRef.current) {
+        studyAbortRef.current.abort();
+      }
+      const controller = new AbortController();
+      studyAbortRef.current = controller;
+
+      setStudyLoading(true);
+      setStudyError(null);
+
+      if (forceRefresh) {
+        setStudyView((prev) => (prev ? { ...prev, data: null } : prev));
+        if (target.messageId) {
+          setMessages((curr) =>
+            curr.map((m) => (m.id === target.messageId ? { ...m, studyData: undefined } : m))
+          );
+        }
+      }
+
+      try {
+        const res = await fetch('/api/study', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            sourceText: target.sourceText,
+            translatedText: target.translatedText,
+            mode: target.mode,
+          }),
+        });
+
+        if (!res.ok) {
+          let errMsg = 'Không thể phân tích học bài lúc này. Thử lại nhé.';
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('application/json')) {
+            try {
+              const errJson = (await res.json()) as { error?: string };
+              if (errJson.error) errMsg = errJson.error;
+            } catch {
+              // Keep default message
+            }
+          }
+          if (studyAbortRef.current === controller) {
+            setStudyError(errMsg);
+          }
+          return;
+        }
+
+        const analysis = (await res.json()) as StudyAnalysis;
+        if (studyAbortRef.current === controller) {
+          setStudyView((prev) => (prev ? { ...prev, data: analysis } : prev));
+          if (target.messageId) {
+            setMessages((curr) =>
+              curr.map((m) => (m.id === target.messageId ? { ...m, studyData: analysis } : m))
+            );
+          }
+          if (target.lessonId) {
+            setSavedLessons((curr) =>
+              curr.map((l) => (l.id === target.lessonId ? { ...l, data: analysis } : l))
+            );
+          }
+          setStudyError(null);
+        }
+      } catch (err: unknown) {
+        if (controller.signal.aborted || (err as { name?: string })?.name === 'AbortError') {
+          return;
+        }
+        if (studyAbortRef.current === controller) {
+          setStudyError('Mất kết nối máy chủ. Kiểm tra mạng rồi thử lại nhé.');
+        }
+      } finally {
+        if (studyAbortRef.current === controller) {
+          studyAbortRef.current = null;
+          setStudyLoading(false);
+        }
+      }
+    },
+    [setMessages, setSavedLessons]
+  );
+
+  const handleOpenStudy = useCallback(
+    (messageId: string) => {
+      const target = messages.find((m) => m.id === messageId);
+      if (!target || target.isError || !target.text.trim()) return;
+      const sourceText = target.sourceText || target.text;
+      const translatedText = target.text;
+      const existingSaved = findMatchingSavedLesson(sourceText, translatedText);
+      const nextView: ActiveStudyView = {
+        messageId: target.id,
+        lessonId: existingSaved?.id,
+        sourceText,
+        translatedText,
+        mode: target.mode ?? mode,
+        data: target.studyData ?? existingSaved?.data ?? null,
+      };
+      setStudyView(nextView);
+      void runStudyAnalysis(nextView, false);
+    },
+    [findMatchingSavedLesson, messages, mode, runStudyAnalysis]
+  );
+
+  const handleOpenSavedLesson = useCallback((lesson: SavedLesson) => {
+    setShowSavedLessons(false);
+    setStudyError(null);
+    setStudyLoading(false);
+    setStudyView({
+      lessonId: lesson.id,
+      sourceText: lesson.sourceText,
+      translatedText: lesson.translatedText,
+      mode: lesson.mode,
+      data: lesson.data,
+    });
+  }, []);
+
+  const handleCloseStudy = useCallback(() => {
+    if (studyAbortRef.current) {
+      studyAbortRef.current.abort();
+      studyAbortRef.current = null;
+    }
+    setStudyView(null);
+    setStudyLoading(false);
+    setStudyError(null);
+  }, []);
+
+  const activeSavedLesson = useMemo(() => {
+    if (!studyView) return undefined;
+    return findMatchingSavedLesson(
+      studyView.sourceText,
+      studyView.translatedText,
+      studyView.lessonId
+    );
+  }, [findMatchingSavedLesson, studyView]);
+
+  const handleToggleSaveCurrentLesson = useCallback(() => {
+    if (!studyView || !studyView.data) return;
+
+    if (activeSavedLesson) {
+      setSavedLessons((curr) => curr.filter((l) => l.id !== activeSavedLesson.id));
+      setStudyView((prev) => (prev ? { ...prev, lessonId: undefined } : prev));
+      return;
+    }
+
+    const newLesson: SavedLesson = {
+      id: `lesson-${Date.now()}`,
+      sourceText: studyView.sourceText,
+      translatedText: studyView.translatedText,
+      mode: studyView.mode,
+      data: studyView.data,
+      savedAt: new Date().toISOString(),
+    };
+    setSavedLessons((curr) => [newLesson, ...curr]);
+    setStudyView((prev) => (prev ? { ...prev, lessonId: newLesson.id } : prev));
+  }, [activeSavedLesson, setSavedLessons, studyView]);
+
+  const handleDeleteSavedLesson = useCallback(
+    (lessonId: string) => {
+      setSavedLessons((curr) => curr.filter((l) => l.id !== lessonId));
+      setStudyView((prev) =>
+        prev && prev.lessonId === lessonId ? { ...prev, lessonId: undefined } : prev
+      );
+    },
+    [setSavedLessons]
+  );
+
   const handleClearChat = () => {
+    handleCloseStudy();
     setMessages([]);
     try {
       window.localStorage.setItem(MESSAGES_DAY_STORAGE_KEY, getLocalDateKey());
@@ -784,15 +1009,32 @@ export default function App() {
             </h1>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setShowThemeSettings(true)}
-            aria-label="Cài đặt"
-            title="Cài đặt"
-            className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
-          >
-            <Settings className="w-5 h-5" strokeWidth={1.9} />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowSavedLessons(true)}
+              aria-label="Bài học đã lưu"
+              title="Bài học đã lưu"
+              className="inline-flex items-center justify-center gap-1.5 min-w-[40px] h-10 px-2.5 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
+            >
+              <Bookmark className="w-[19px] h-[19px]" strokeWidth={1.9} />
+              {savedLessons.length > 0 && (
+                <span className="text-[13px] font-medium tabular-nums text-[#111111]">
+                  {savedLessons.length}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowThemeSettings(true)}
+              aria-label="Cài đặt"
+              title="Cài đặt"
+              className="flex items-center justify-center w-10 h-10 rounded-full text-[#52525B] hover:text-[#111111] hover:bg-[#F4F4F5] transition-colors shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-[#111111]"
+            >
+              <Settings className="w-5 h-5" strokeWidth={1.9} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -807,7 +1049,38 @@ export default function App() {
         onStop={handleStop}
         onRegenerate={handleRegenerate}
         onTranslateToVi={handleTranslateToVi}
+        onOpenStudy={handleOpenStudy}
       />
+
+      {studyView && (
+        <Suspense fallback={null}>
+          <StudyModal
+            isOpen={Boolean(studyView)}
+            sourceText={studyView.sourceText}
+            translatedText={studyView.translatedText}
+            mode={studyView.mode}
+            data={studyView.data}
+            isLoading={studyLoading}
+            error={studyError}
+            isSaved={Boolean(activeSavedLesson)}
+            onToggleSave={handleToggleSaveCurrentLesson}
+            onRetry={() => void runStudyAnalysis(studyView, true)}
+            onClose={handleCloseStudy}
+          />
+        </Suspense>
+      )}
+
+      {showSavedLessons && (
+        <Suspense fallback={null}>
+          <SavedLessonsModal
+            isOpen={showSavedLessons}
+            lessons={savedLessons}
+            onSelectLesson={handleOpenSavedLesson}
+            onDeleteLesson={handleDeleteSavedLesson}
+            onClose={() => setShowSavedLessons(false)}
+          />
+        </Suspense>
+      )}
 
       {showThemeSettings && (
         <Suspense fallback={null}>

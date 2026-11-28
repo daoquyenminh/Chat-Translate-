@@ -1,12 +1,16 @@
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   CHAT_SYSTEM_INSTRUCTION,
   FORMAL_SYSTEM_INSTRUCTION,
+  STUDY_SYSTEM_INSTRUCTION,
+  StudyAnalysis,
   TRANSLATE_MODEL,
   TargetLanguage,
   TranslationMode,
   VI_SYSTEM_INSTRUCTION,
+  buildStudyPrompt,
   buildTranslatePrompt,
+  buildViTranslatePrompt,
 } from './prompts';
 
 export function sanitizeInputText(raw: string): string {
@@ -235,7 +239,7 @@ export async function openTranslateStreamWithFallback(
       : CHAT_SYSTEM_INSTRUCTION;
   const contents =
     options.targetLang === 'vi'
-      ? options.text
+      ? buildViTranslatePrompt(options.text)
       : buildTranslatePrompt(options.text, options.regenerate);
 
   let lastError: unknown = null;
@@ -265,4 +269,282 @@ export async function openTranslateStreamWithFallback(
   }
 
   throw lastError ?? new Error('TRANSLATE_FAILED');
+}
+
+const STUDY_RESPONSE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    inputType: {
+      type: Type.STRING,
+      enum: ['english', 'vietnamese', 'mixed'],
+    },
+    hasMistakes: { type: Type.BOOLEAN },
+    originalSegments: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          text: { type: Type.STRING },
+          status: { type: Type.STRING, enum: ['normal', 'wrong', 'correct', 'key'] },
+        },
+        required: ['text', 'status'],
+      },
+    },
+    correctedSentence: { type: Type.STRING },
+    correctedSegments: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          text: { type: Type.STRING },
+          status: { type: Type.STRING, enum: ['normal', 'wrong', 'correct', 'key'] },
+        },
+        required: ['text', 'status'],
+      },
+    },
+    mistakes: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          wrong: { type: Type.STRING },
+          correct: { type: Type.STRING },
+          explanation: { type: Type.STRING },
+        },
+        required: ['wrong', 'correct', 'explanation'],
+      },
+    },
+    usageContext: { type: Type.STRING },
+    alternatives: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          english: { type: Type.STRING },
+          vietnamese: { type: Type.STRING },
+          tone: { type: Type.STRING },
+        },
+        required: ['english', 'vietnamese', 'tone'],
+      },
+    },
+    keyTakeaways: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          phrase: { type: Type.STRING },
+          meaning: { type: Type.STRING },
+          note: { type: Type.STRING },
+        },
+        required: ['phrase', 'meaning', 'note'],
+      },
+    },
+  },
+  required: [
+    'inputType',
+    'hasMistakes',
+    'originalSegments',
+    'correctedSentence',
+    'correctedSegments',
+    'mistakes',
+    'usageContext',
+    'alternatives',
+    'keyTakeaways',
+  ],
+};
+
+function normalizeStudyAnalysis(
+  raw: Partial<StudyAnalysis>,
+  fallbackSource: string,
+  fallbackTranslated: string
+): StudyAnalysis {
+  const inputType =
+    raw.inputType === 'english' || raw.inputType === 'mixed' || raw.inputType === 'vietnamese'
+      ? raw.inputType
+      : 'vietnamese';
+  const correctedSentence =
+    typeof raw.correctedSentence === 'string' && raw.correctedSentence.trim()
+      ? raw.correctedSentence.trim()
+      : fallbackTranslated;
+
+  const validSegment = (seg: unknown): seg is { text: string; status: 'normal' | 'wrong' | 'correct' | 'key' } => {
+    if (!seg || typeof seg !== 'object') return false;
+    const obj = seg as { text?: unknown; status?: unknown };
+    return (
+      typeof obj.text === 'string' &&
+      obj.text.length > 0 &&
+      (obj.status === 'normal' ||
+        obj.status === 'wrong' ||
+        obj.status === 'correct' ||
+        obj.status === 'key')
+    );
+  };
+
+  const isCapitalizationOnlyDiff = (a: string, b: string): boolean => {
+    const cleanA = a.trim().replace(/[.,!?;:'"()]+$/g, '');
+    const cleanB = b.trim().replace(/[.,!?;:'"()]+$/g, '');
+    return cleanA.length > 0 && cleanA.toLowerCase() === cleanB.toLowerCase();
+  };
+
+  const rawMistakes = Array.isArray(raw.mistakes)
+    ? raw.mistakes.filter(
+        (m) =>
+          m &&
+          typeof m.wrong === 'string' &&
+          typeof m.correct === 'string' &&
+          typeof m.explanation === 'string' &&
+          m.explanation.trim().length > 0
+      )
+    : [];
+
+  const ignoredCaseWords = new Set<string>();
+  const mistakes = rawMistakes
+    .filter((m) => {
+      if (isCapitalizationOnlyDiff(m.wrong, m.correct)) {
+        ignoredCaseWords.add(m.wrong.trim().toLowerCase());
+        return false;
+      }
+      return true;
+    })
+    .slice(0, 8);
+
+  const lowerCorrected = correctedSentence.toLowerCase();
+  const lowerSource = fallbackSource.toLowerCase();
+
+  const rawOriginalSegments =
+    Array.isArray(raw.originalSegments) && raw.originalSegments.filter(validSegment).length > 0
+      ? raw.originalSegments.filter(validSegment)
+      : [{ text: fallbackSource, status: 'normal' as const }];
+
+  const originalSegments = rawOriginalSegments.map((seg) => {
+    if (seg.status !== 'wrong') return seg;
+    const token = seg.text.trim().toLowerCase();
+    if (
+      ignoredCaseWords.has(token) ||
+      (token.length > 0 &&
+        !mistakes.some((m) => m.wrong.trim().toLowerCase().includes(token)) &&
+        new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lowerCorrected))
+    ) {
+      return { ...seg, status: 'normal' as const };
+    }
+    return seg;
+  });
+
+  const rawCorrectedSegments =
+    Array.isArray(raw.correctedSegments) && raw.correctedSegments.filter(validSegment).length > 0
+      ? raw.correctedSegments.filter(validSegment)
+      : [{ text: correctedSentence, status: 'normal' as const }];
+
+  const correctedSegments = rawCorrectedSegments.map((seg) => {
+    if (seg.status !== 'correct') return seg;
+    const token = seg.text.trim().toLowerCase();
+    if (
+      ignoredCaseWords.has(token) ||
+      (token.length > 0 &&
+        !mistakes.some((m) => m.correct.trim().toLowerCase().includes(token)) &&
+        new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lowerSource))
+    ) {
+      return { ...seg, status: 'normal' as const };
+    }
+    return seg;
+  });
+
+  const alternatives = Array.isArray(raw.alternatives)
+    ? raw.alternatives
+        .filter(
+          (a) =>
+            a &&
+            typeof a.english === 'string' &&
+            a.english.trim().length > 0 &&
+            typeof a.vietnamese === 'string'
+        )
+        .slice(0, 5)
+    : [];
+
+  const keyTakeaways = Array.isArray(raw.keyTakeaways)
+    ? raw.keyTakeaways
+        .filter(
+          (t) =>
+            t &&
+            typeof t.phrase === 'string' &&
+            t.phrase.trim().length > 0 &&
+            typeof t.meaning === 'string'
+        )
+        .slice(0, 5)
+    : [];
+
+  return {
+    inputType,
+    hasMistakes: mistakes.length > 0,
+    originalSegments,
+    correctedSentence,
+    correctedSegments,
+    mistakes,
+    usageContext:
+      typeof raw.usageContext === 'string' && raw.usageContext.trim()
+        ? raw.usageContext.trim()
+        : 'Dùng trong giao tiếp tiếng Anh hằng ngày để diễn đạt ý tự nhiên và rõ ràng.',
+    alternatives,
+    keyTakeaways,
+  };
+}
+
+export async function generateStudyAnalysis(
+  ai: GoogleGenAI,
+  options: {
+    sourceText: string;
+    translatedText: string;
+    mode: TranslationMode;
+  }
+): Promise<StudyAnalysis> {
+  const contents = buildStudyPrompt(
+    options.sourceText,
+    options.translatedText,
+    options.mode
+  );
+
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: TRANSLATE_MODEL,
+        contents,
+        config: {
+          systemInstruction: STUDY_SYSTEM_INSTRUCTION,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+          responseMimeType: 'application/json',
+          responseSchema: STUDY_RESPONSE_SCHEMA,
+        },
+      });
+
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        throw new Error('EMPTY_STUDY_OUTPUT');
+      }
+
+      const parsed = JSON.parse(rawText) as Partial<StudyAnalysis>;
+      return normalizeStudyAnalysis(parsed, options.sourceText, options.translatedText);
+    } catch (err: unknown) {
+      lastError = err;
+      const info = inspectGeminiError(err);
+
+      if (info.isAuthError || info.isLocationUnsupported || info.isDailyQuota) {
+        throw err;
+      }
+
+      if (attempt === 0 && (info.isRateLimit || info.isTransient)) {
+        const retryMs =
+          info.retryAfterSeconds !== null && info.retryAfterSeconds * 1000 <= 4000
+            ? Math.max(1200, info.retryAfterSeconds * 1000)
+            : 1500;
+        await sleep(retryMs);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError ?? new Error('STUDY_FAILED');
 }

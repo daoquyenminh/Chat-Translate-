@@ -1,6 +1,6 @@
-import { TranslationMode } from '../shared/prompts';
+import { StudyAnalysis, StudyHighlightSegment, TranslationMode } from '../shared/prompts';
 
-export type { TranslationMode };
+export type { StudyAnalysis, StudyHighlightSegment, TranslationMode };
 
 export interface ChatMessage {
   id: string;
@@ -13,6 +13,16 @@ export interface ChatMessage {
   viTranslation?: string;
   showViTranslation?: boolean;
   viError?: string;
+  studyData?: StudyAnalysis;
+}
+
+export interface SavedLesson {
+  id: string;
+  sourceText: string;
+  translatedText: string;
+  mode: TranslationMode;
+  data: StudyAnalysis;
+  savedAt: string;
 }
 
 export interface ChatTheme {
