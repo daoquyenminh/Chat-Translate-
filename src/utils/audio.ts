@@ -164,6 +164,7 @@ export function speakWithBrowserVoice(
     onStart?: () => void;
     onEnd?: () => void;
     onError?: () => void;
+    onBoundary?: (start: number, end: number) => void;
   }
 ): boolean {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
@@ -193,6 +194,29 @@ export function speakWithBrowserVoice(
     utterance.onstart = () => callbacks?.onStart?.();
     utterance.onend = () => callbacks?.onEnd?.();
     utterance.onerror = () => callbacks?.onError?.();
+    if (callbacks?.onBoundary) {
+      utterance.onboundary = (event: SpeechSynthesisEvent) => {
+        if (event.name && event.name !== 'word') return;
+        const start = event.charIndex;
+        if (typeof start !== 'number' || start < 0 || start >= text.length) return;
+        let end =
+          typeof event.charLength === 'number' && event.charLength > 0
+            ? Math.min(text.length, start + event.charLength)
+            : start;
+        if (end <= start) {
+          end = start;
+          while (end < text.length && !/\s/.test(text[end])) {
+            end++;
+          }
+          while (end > start + 1 && /[.,!?;:)"'\]]/.test(text[end - 1])) {
+            end--;
+          }
+        }
+        if (end > start) {
+          callbacks.onBoundary?.(start, end);
+        }
+      };
+    }
 
     synth.speak(utterance);
   };

@@ -114,6 +114,12 @@ export function applyThemeCssVars(theme: ChatTheme): void {
     botIsDark ? 'rgba(255, 255, 255, 0.12)' : '#EAEAEA'
   );
 
+  const [br, bg, bb] = parseHexRgb(safe.botBubbleColor);
+  const botLuminance = (0.299 * br + 0.587 * bg + 0.114 * bb) / 255;
+  const botIsVeryDark = botLuminance < 0.22;
+  root.style.setProperty('--cydia-speech-hl-bg', botIsVeryDark ? '#FFFFFF' : '#111111');
+  root.style.setProperty('--cydia-speech-hl-text', botIsVeryDark ? '#111111' : '#FFFFFF');
+
   root.style.setProperty('--cydia-chat-bg', safe.chatBgColor);
   root.style.setProperty(
     '--cydia-chat-muted',

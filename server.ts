@@ -258,9 +258,8 @@ async function startServer(): Promise<void> {
       );
 
       res.setHeader('X-Cydia-Translate', '1');
-      res.setHeader('Content-Type', speech.mimeType);
       res.setHeader('Cache-Control', 'private, max-age=3600');
-      res.status(200).send(Buffer.from(speech.audioBytes));
+      res.status(200).json(speech);
     } catch (err: unknown) {
       console.warn('[/api/tts] Edge Neural TTS error:', (err as { message?: string })?.message ?? err);
       res.status(502).json({ error: 'Không thể tạo giọng đọc lúc này.' });

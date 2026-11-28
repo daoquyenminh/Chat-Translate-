@@ -1,8 +1,15 @@
 import { VoiceGender } from './prompts';
 
+export interface SpeechWordTiming {
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
 export interface EdgeSpeechResult {
-  audioBytes: Uint8Array;
+  audioBase64: string;
   mimeType: string;
+  timings: SpeechWordTiming[];
 }
 
 export interface EdgeSocketLike {
@@ -378,6 +385,16 @@ function escapeXmlForSsml(input: string): string {
     .replace(/'/g, '&apos;');
 }
 
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
 function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
   let total = 0;
   for (const c of chunks) {
@@ -467,6 +484,7 @@ export async function synthesizeWithEdgeTts(
 
     const decoder = new TextDecoder();
     const audioChunks: Uint8Array[] = [];
+    const timings: SpeechWordTiming[] = [];
 
     return new Promise<EdgeSpeechResult>((resolve, reject) => {
       let settled = false;
@@ -496,8 +514,9 @@ export async function synthesizeWithEdgeTts(
         }
         const merged = concatUint8Arrays(audioChunks);
         resolve({
-          audioBytes: merged,
+          audioBase64: uint8ToBase64(merged),
           mimeType: 'audio/mpeg',
+          timings,
         });
       };
 
@@ -516,6 +535,45 @@ export async function synthesizeWithEdgeTts(
       socket.onError((err) => finishErr(err));
 
       socket.onTextMessage((msg) => {
+        if (msg.includes('Path:audio.metadata')) {
+          const bodyStart = msg.indexOf('\r\n\r\n');
+          if (bodyStart !== -1) {
+            try {
+              const payload = JSON.parse(msg.slice(bodyStart + 4)) as {
+                Metadata?: Array<{
+                  Type?: string;
+                  Data?: {
+                    Offset?: number;
+                    Duration?: number;
+                    text?: { Text?: string };
+                  };
+                }>;
+              };
+              if (Array.isArray(payload.Metadata)) {
+                for (const item of payload.Metadata) {
+                  if (item.Type !== 'WordBoundary' || !item.Data) continue;
+                  const word = item.Data.text?.Text;
+                  const offset = item.Data.Offset;
+                  const duration = item.Data.Duration;
+                  if (
+                    typeof word === 'string' &&
+                    word.length > 0 &&
+                    typeof offset === 'number' &&
+                    typeof duration === 'number'
+                  ) {
+                    const startMs = Math.max(0, Math.round(offset / 10000));
+                    const endMs = Math.max(startMs + 40, Math.round((offset + duration) / 10000));
+                    timings.push({ text: word, startMs, endMs });
+                  }
+                }
+              }
+            } catch {
+              // Ignore malformed metadata frame
+            }
+          }
+          return;
+        }
+
         if (msg.includes('Path:turn.end')) {
           finishOk();
         }
@@ -551,7 +609,7 @@ export async function synthesizeWithEdgeTts(
           `X-Timestamp:${ts}\r\n` +
           `Content-Type:application/json; charset=utf-8\r\n` +
           `Path:speech.config\r\n\r\n` +
-          `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"${OUTPUT_FORMAT}"}}}}\r\n`;
+          `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},"outputFormat":"${OUTPUT_FORMAT}"}}}}\r\n`;
 
         const ssml =
           `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +

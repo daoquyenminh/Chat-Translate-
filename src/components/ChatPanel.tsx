@@ -10,7 +10,7 @@ import {
   Square,
   Volume2,
 } from 'lucide-react';
-import { ChatMessage, VoiceGender } from '../types';
+import { ChatMessage, SpeechHighlightRange, VoiceGender } from '../types';
 import { formatDateGroup, formatTime } from '../utils/formatters';
 
 interface ChatPanelProps {
@@ -21,6 +21,7 @@ interface ChatPanelProps {
   copiedMessageId: string | null;
   speakingKey: string | null;
   loadingSpeechKey: string | null;
+  speechHighlight: SpeechHighlightRange | null;
   voiceGender: VoiceGender;
   onCopyMessage: (messageId: string, text: string) => void;
   onSend: (text: string) => void;
@@ -31,6 +32,26 @@ interface ChatPanelProps {
   onSpeak: (key: string, text: string, mode?: 'chat' | 'formal') => void;
 }
 
+function renderSpeechHighlightedText(
+  text: string,
+  highlight: SpeechHighlightRange | null
+): React.ReactNode {
+  if (!highlight) return text;
+  const start = Math.max(0, Math.min(text.length, highlight.start));
+  const end = Math.max(start, Math.min(text.length, highlight.end));
+  if (end <= start) return text;
+
+  return (
+    <>
+      {text.slice(0, start)}
+      <mark className="bg-[var(--cydia-speech-hl-bg)] text-[var(--cydia-speech-hl-text)] rounded-[4px] px-[2px] -mx-[2px] py-[1px] box-decoration-clone">
+        {text.slice(start, end)}
+      </mark>
+      {text.slice(end)}
+    </>
+  );
+}
+
 export const ChatPanel = React.memo(function ChatPanel({
   messages,
   isLoading,
@@ -39,6 +60,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   copiedMessageId,
   speakingKey,
   loadingSpeechKey,
+  speechHighlight,
   voiceGender,
   onCopyMessage,
   onSend,
@@ -251,7 +273,12 @@ export const ChatPanel = React.memo(function ChatPanel({
                           : 'bg-[var(--cydia-bot-bg)] text-[var(--cydia-bot-text)] border border-[var(--cydia-bot-border)] hover:opacity-95 active:scale-[0.99] cursor-pointer'
                       }`}
                     >
-                      <div>{msg.text}</div>
+                      <div>
+                        {renderSpeechHighlightedText(
+                          msg.text,
+                          speechHighlight?.key === `msg-${msg.id}` ? speechHighlight : null
+                        )}
+                      </div>
 
                       {msg.showViTranslation && (msg.viTranslation || msg.viError || translatingViId === msg.id) && (
                         <div

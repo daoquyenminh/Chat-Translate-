@@ -4,8 +4,21 @@ import {
   TranslationMode,
   VoiceGender,
 } from '../shared/prompts';
+import { SpeechWordTiming } from '../shared/edgeTts';
 
-export type { StudyAnalysis, StudyHighlightSegment, TranslationMode, VoiceGender };
+export type {
+  SpeechWordTiming,
+  StudyAnalysis,
+  StudyHighlightSegment,
+  TranslationMode,
+  VoiceGender,
+};
+
+export interface SpeechHighlightRange {
+  key: string;
+  start: number;
+  end: number;
+}
 
 export interface ChatMessage {
   id: string;

@@ -4,6 +4,8 @@ import {
   ChatMessage,
   ChatTheme,
   SavedLesson,
+  SpeechHighlightRange,
+  SpeechWordTiming,
   StudyAnalysis,
   ThemePreset,
   TranslationMode,
@@ -13,7 +15,12 @@ import { INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
 import { copyTextToClipboard } from './utils/formatters';
-import { speakWithBrowserVoice, stopBrowserVoice } from './utils/audio';
+import {
+  createPlayableAudioUrl,
+  speakWithBrowserVoice,
+  stopBrowserVoice,
+} from './utils/audio';
+import { alignTimingsToText, findActiveWordRange } from './utils/speechHighlight';
 import {
   THEME_STORAGE_KEY,
   applyThemeCssVars,
@@ -241,13 +248,17 @@ export default function App() {
 
   const [speakingKey, setSpeakingKey] = useState<string | null>(null);
   const [loadingSpeechKey, setLoadingSpeechKey] = useState<string | null>(null);
+  const [speechHighlight, setSpeechHighlight] = useState<SpeechHighlightRange | null>(null);
 
   const copyTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const studyAbortRef = useRef<AbortController | null>(null);
   const ttsAbortRef = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const ttsCacheRef = useRef<Map<string, string>>(new Map());
+  const speechRafRef = useRef<number | null>(null);
+  const ttsCacheRef = useRef<Map<string, { url: string; timings: SpeechWordTiming[] }>>(
+    new Map()
+  );
 
   const visibleMessages = useMemo(
     () =>
@@ -991,7 +1002,15 @@ export default function App() {
     [setSavedLessons]
   );
 
+  const stopSpeechSyncLoop = useCallback(() => {
+    if (speechRafRef.current !== null) {
+      window.cancelAnimationFrame(speechRafRef.current);
+      speechRafRef.current = null;
+    }
+  }, []);
+
   const stopSpeech = useCallback(() => {
+    stopSpeechSyncLoop();
     if (ttsAbortRef.current) {
       ttsAbortRef.current.abort();
       ttsAbortRef.current = null;
@@ -1005,7 +1024,8 @@ export default function App() {
     stopBrowserVoice();
     setSpeakingKey(null);
     setLoadingSpeechKey(null);
-  }, []);
+    setSpeechHighlight(null);
+  }, [stopSpeechSyncLoop]);
 
   const handleVoiceGenderChange = useCallback(
     (nextVoice: VoiceGender) => {
@@ -1020,6 +1040,9 @@ export default function App() {
   useEffect(() => {
     const cache = ttsCacheRef.current;
     return () => {
+      if (speechRafRef.current !== null) {
+        window.cancelAnimationFrame(speechRafRef.current);
+      }
       if (ttsAbortRef.current) {
         ttsAbortRef.current.abort();
       }
@@ -1028,7 +1051,7 @@ export default function App() {
         audioRef.current.src = '';
       }
       stopBrowserVoice();
-      cache.forEach((url) => URL.revokeObjectURL(url));
+      cache.forEach((entry) => URL.revokeObjectURL(entry.url));
       cache.clear();
     };
   }, []);
@@ -1053,39 +1076,84 @@ export default function App() {
       const audio = audioRef.current;
 
       const cacheKey = `${voiceGender}:${cleanText}`;
-      const cachedUrl = ttsCacheRef.current.get(cacheKey);
+      const cachedEntry = ttsCacheRef.current.get(cacheKey);
 
-      const playUrl = async (url: string) => {
-        audio.onended = () => {
+      const playWithHighlight = async (url: string, timings: SpeechWordTiming[]) => {
+        const aligned = alignTimingsToText(text, timings);
+        let lastStart = -1;
+        let lastEnd = -1;
+
+        const clearPlayback = () => {
+          stopSpeechSyncLoop();
           setSpeakingKey((prev) => (prev === key ? null : prev));
+          setSpeechHighlight((prev) => (prev?.key === key ? null : prev));
         };
-        audio.onerror = () => {
-          setSpeakingKey((prev) => (prev === key ? null : prev));
+
+        const syncFrame = () => {
+          if (audio.paused || audio.ended) {
+            speechRafRef.current = null;
+            return;
+          }
+          const currentMs = audio.currentTime * 1000;
+          const active = findActiveWordRange(aligned, currentMs);
+          const nextStart = active ? active.start : -1;
+          const nextEnd = active ? active.end : -1;
+
+          if (nextStart !== lastStart || nextEnd !== lastEnd) {
+            lastStart = nextStart;
+            lastEnd = nextEnd;
+            setSpeechHighlight(
+              active ? { key, start: active.start, end: active.end } : null
+            );
+          }
+          speechRafRef.current = window.requestAnimationFrame(syncFrame);
         };
+
+        audio.onended = clearPlayback;
+        audio.onerror = clearPlayback;
         audio.src = url;
         audio.currentTime = 0;
         setSpeakingKey(key);
+        setSpeechHighlight(null);
+
         try {
           await audio.play();
+          if (aligned.length > 0) {
+            stopSpeechSyncLoop();
+            speechRafRef.current = window.requestAnimationFrame(syncFrame);
+          }
         } catch {
-          setSpeakingKey((prev) => (prev === key ? null : prev));
+          clearPlayback();
         }
       };
 
       const playBrowserFallback = () => {
         setLoadingSpeechKey(null);
         setSpeakingKey(key);
+        setSpeechHighlight(null);
+        const leadingSpaces = text.length - text.trimStart().length;
+        const clearBrowser = () => {
+          setSpeakingKey((prev) => (prev === key ? null : prev));
+          setSpeechHighlight((prev) => (prev?.key === key ? null : prev));
+        };
         const ok = speakWithBrowserVoice(cleanText, voiceGender, {
-          onEnd: () => setSpeakingKey((prev) => (prev === key ? null : prev)),
-          onError: () => setSpeakingKey((prev) => (prev === key ? null : prev)),
+          onBoundary: (start, end) => {
+            setSpeechHighlight({
+              key,
+              start: start + leadingSpaces,
+              end: end + leadingSpaces,
+            });
+          },
+          onEnd: clearBrowser,
+          onError: clearBrowser,
         });
         if (!ok) {
-          setSpeakingKey((prev) => (prev === key ? null : prev));
+          clearBrowser();
         }
       };
 
-      if (cachedUrl) {
-        await playUrl(cachedUrl);
+      if (cachedEntry) {
+        await playWithHighlight(cachedEntry.url, cachedEntry.timings);
         return;
       }
 
@@ -1112,16 +1180,29 @@ export default function App() {
         });
 
         const contentType = (res.headers.get('content-type') || '').toLowerCase();
-        if (!res.ok || !contentType.startsWith('audio/')) {
+        let objectUrl = '';
+        let timings: SpeechWordTiming[] = [];
+
+        if (res.ok && contentType.includes('application/json')) {
+          const data = (await res.json()) as {
+            audioBase64?: string;
+            mimeType?: string;
+            timings?: SpeechWordTiming[];
+          };
+          if (!data.audioBase64) {
+            throw new Error('TTS_EMPTY_AUDIO');
+          }
+          objectUrl = createPlayableAudioUrl(data.audioBase64, data.mimeType || 'audio/mpeg');
+          timings = Array.isArray(data.timings) ? data.timings : [];
+        } else if (res.ok && contentType.startsWith('audio/')) {
+          const audioBlob = await res.blob();
+          if (audioBlob.size === 0) {
+            throw new Error('TTS_EMPTY_BLOB');
+          }
+          objectUrl = URL.createObjectURL(audioBlob);
+        } else {
           throw new Error(`TTS_HTTP_${res.status}`);
         }
-
-        const audioBlob = await res.blob();
-        if (audioBlob.size === 0) {
-          throw new Error('TTS_EMPTY_BLOB');
-        }
-
-        const objectUrl = URL.createObjectURL(audioBlob);
 
         if (controller.signal.aborted || ttsAbortRef.current !== controller) {
           URL.revokeObjectURL(objectUrl);
@@ -1131,15 +1212,15 @@ export default function App() {
         if (ttsCacheRef.current.size >= 40) {
           const oldestKey = ttsCacheRef.current.keys().next().value;
           if (oldestKey) {
-            const oldUrl = ttsCacheRef.current.get(oldestKey);
-            if (oldUrl) URL.revokeObjectURL(oldUrl);
+            const oldEntry = ttsCacheRef.current.get(oldestKey);
+            if (oldEntry) URL.revokeObjectURL(oldEntry.url);
             ttsCacheRef.current.delete(oldestKey);
           }
         }
-        ttsCacheRef.current.set(cacheKey, objectUrl);
+        ttsCacheRef.current.set(cacheKey, { url: objectUrl, timings });
 
         setLoadingSpeechKey(null);
-        await playUrl(objectUrl);
+        await playWithHighlight(objectUrl, timings);
       } catch (err: unknown) {
         if (controller.signal.aborted || (err as { name?: string })?.name === 'AbortError') {
           return;
@@ -1154,7 +1235,7 @@ export default function App() {
         }
       }
     },
-    [loadingSpeechKey, speakingKey, stopSpeech, voiceGender]
+    [loadingSpeechKey, speakingKey, stopSpeech, stopSpeechSyncLoop, voiceGender]
   );
 
   const handleClearChat = () => {
@@ -1216,6 +1297,7 @@ export default function App() {
         copiedMessageId={copiedMessageId}
         speakingKey={speakingKey}
         loadingSpeechKey={loadingSpeechKey}
+        speechHighlight={speechHighlight}
         voiceGender={voiceGender}
         onCopyMessage={triggerCopy}
         onSend={handleSend}
@@ -1239,6 +1321,7 @@ export default function App() {
             isSaved={Boolean(activeSavedLesson)}
             speakingKey={speakingKey}
             loadingSpeechKey={loadingSpeechKey}
+            speechHighlight={speechHighlight}
             onSpeak={(key, text, targetMode) => void handleSpeak(key, text, targetMode)}
             onToggleSave={handleToggleSaveCurrentLesson}
             onRetry={() => void runStudyAnalysis(studyView, true)}

@@ -10,7 +10,12 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { StudyAnalysis, StudyHighlightSegment, TranslationMode } from '../types';
+import {
+  SpeechHighlightRange,
+  StudyAnalysis,
+  StudyHighlightSegment,
+  TranslationMode,
+} from '../types';
 import { copyTextToClipboard } from '../utils/formatters';
 
 interface StudyModalProps {
@@ -24,6 +29,7 @@ interface StudyModalProps {
   isSaved: boolean;
   speakingKey: string | null;
   loadingSpeechKey: string | null;
+  speechHighlight: SpeechHighlightRange | null;
   onSpeak: (key: string, text: string, mode?: TranslationMode) => void;
   onToggleSave: () => void;
   onRetry: () => void;
@@ -37,15 +43,41 @@ function getLoadingStageLabel(percent: number): string {
   return 'Hoàn tất phân tích';
 }
 
-function renderSegments(segments: StudyHighlightSegment[]) {
+function renderSegments(
+  segments: StudyHighlightSegment[],
+  activeHighlight?: SpeechHighlightRange | null
+) {
+  let cursor = 0;
+
   return segments.map((seg, idx) => {
+    const segStart = cursor;
+    const segEnd = segStart + seg.text.length;
+    cursor = segEnd;
+
+    let content: React.ReactNode = seg.text;
+    if (activeHighlight && activeHighlight.end > segStart && activeHighlight.start < segEnd) {
+      const localStart = Math.max(0, activeHighlight.start - segStart);
+      const localEnd = Math.min(seg.text.length, activeHighlight.end - segStart);
+      if (localEnd > localStart) {
+        content = (
+          <>
+            {seg.text.slice(0, localStart)}
+            <mark className="bg-[#111111] text-white rounded-[4px] px-[2px] -mx-[2px] py-[1px] box-decoration-clone">
+              {seg.text.slice(localStart, localEnd)}
+            </mark>
+            {seg.text.slice(localEnd)}
+          </>
+        );
+      }
+    }
+
     if (seg.status === 'wrong') {
       return (
         <mark
           key={idx}
           className="bg-red-50 text-red-700 line-through decoration-red-400 px-1 py-0.5 rounded-md font-medium"
         >
-          {seg.text}
+          {content}
         </mark>
       );
     }
@@ -55,7 +87,7 @@ function renderSegments(segments: StudyHighlightSegment[]) {
           key={idx}
           className="bg-emerald-50 text-emerald-800 px-1 py-0.5 rounded-md font-medium"
         >
-          {seg.text}
+          {content}
         </mark>
       );
     }
@@ -65,11 +97,11 @@ function renderSegments(segments: StudyHighlightSegment[]) {
           key={idx}
           className="bg-amber-50 text-amber-900 px-1 py-0.5 rounded-md font-medium"
         >
-          {seg.text}
+          {content}
         </mark>
       );
     }
-    return <React.Fragment key={idx}>{seg.text}</React.Fragment>;
+    return <React.Fragment key={idx}>{content}</React.Fragment>;
   });
 }
 
@@ -84,6 +116,7 @@ export function StudyModal({
   isSaved,
   speakingKey,
   loadingSpeechKey,
+  speechHighlight,
   onSpeak,
   onToggleSave,
   onRetry,
@@ -295,7 +328,12 @@ export function StudyModal({
                         <div className="flex items-center gap-3">
                           <button
                             type="button"
-                            onClick={() => onSpeak('study-main', data.correctedSentence, mode)}
+                            onClick={() => {
+                              const spokenText =
+                                data.correctedSegments.map((s) => s.text).join('') ||
+                                data.correctedSentence;
+                              onSpeak('study-main', spokenText, mode);
+                            }}
                             className={`inline-flex items-center gap-1 text-[12px] font-medium transition-colors cursor-pointer py-0.5 ${
                               speakingKey === 'study-main'
                                 ? 'text-[var(--cydia-accent)]'
@@ -332,7 +370,10 @@ export function StudyModal({
                         </div>
                       </div>
                       <p className="text-[14.5px] leading-[1.55] text-[#111111] whitespace-pre-wrap break-words">
-                        {renderSegments(data.correctedSegments)}
+                        {renderSegments(
+                          data.correctedSegments,
+                          speechHighlight?.key === 'study-main' ? speechHighlight : null
+                        )}
                       </p>
                     </div>
                   </div>

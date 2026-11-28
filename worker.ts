@@ -468,13 +468,8 @@ async function handleTts(request: CloudflareRequest): Promise<Response> {
       workerEdgeSocketConnector,
       'https'
     );
-    return new Response(speech.audioBytes.buffer as ArrayBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type': speech.mimeType,
-        'X-Cydia-Translate': '1',
-        'Cache-Control': 'private, max-age=3600',
-      },
+    return jsonResponse(speech as unknown as Record<string, unknown>, 200, {
+      'Cache-Control': 'private, max-age=3600',
     });
   } catch {
     return jsonResponse({ error: 'Không thể tạo giọng đọc lúc này.' }, 502);
