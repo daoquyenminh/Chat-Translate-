@@ -10,7 +10,7 @@ import {
   Square,
   Volume2,
 } from 'lucide-react';
-import { ChatMessage } from '../types';
+import { ChatMessage, VoiceGender } from '../types';
 import { formatDateGroup, formatTime } from '../utils/formatters';
 
 interface ChatPanelProps {
@@ -21,6 +21,7 @@ interface ChatPanelProps {
   copiedMessageId: string | null;
   speakingKey: string | null;
   loadingSpeechKey: string | null;
+  voiceGender: VoiceGender;
   onCopyMessage: (messageId: string, text: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
@@ -38,6 +39,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   copiedMessageId,
   speakingKey,
   loadingSpeechKey,
+  voiceGender,
   onCopyMessage,
   onSend,
   onStop,
@@ -276,11 +278,15 @@ export const ChatPanel = React.memo(function ChatPanel({
                           aria-label={
                             speakingKey === `msg-${msg.id}`
                               ? 'Dừng phát giọng đọc'
+                              : voiceGender === 'male'
+                              ? 'Nghe phát âm giọng nam bản xứ'
                               : 'Nghe phát âm giọng nữ bản xứ'
                           }
                           title={
                             speakingKey === `msg-${msg.id}`
                               ? 'Dừng đọc'
+                              : voiceGender === 'male'
+                              ? 'Nghe phát âm giọng nam bản xứ'
                               : 'Nghe phát âm giọng nữ bản xứ'
                           }
                           className={`inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-full border border-transparent transition-all duration-150 disabled:opacity-40 cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cydia-accent)] ${

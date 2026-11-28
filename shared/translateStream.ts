@@ -5,11 +5,13 @@ import {
   STUDY_SYSTEM_INSTRUCTION,
   StudyAnalysis,
   TRANSLATE_MODEL,
+  TTS_FALLBACK_MODEL,
   TTS_MODEL,
-  TTS_VOICE_NAME,
+  TTS_VOICES,
   TargetLanguage,
   TranslationMode,
   VI_SYSTEM_INSTRUCTION,
+  VoiceGender,
   buildStudyPrompt,
   buildTranslatePrompt,
   buildViTranslatePrompt,
@@ -556,75 +558,139 @@ export interface GeneratedSpeechResult {
   mimeType: string;
 }
 
+const ttsResultCache = new Map<string, GeneratedSpeechResult>();
+const ttsModelCooldownUntil = new Map<string, number>();
+const TTS_CACHE_MAX_ENTRIES = 60;
+const TTS_QUOTA_COOLDOWN_MS = 5 * 60 * 1000;
+
+function getCachedTts(key: string): GeneratedSpeechResult | undefined {
+  const hit = ttsResultCache.get(key);
+  if (!hit) return undefined;
+  ttsResultCache.delete(key);
+  ttsResultCache.set(key, hit);
+  return hit;
+}
+
+function setCachedTts(key: string, value: GeneratedSpeechResult): void {
+  if (ttsResultCache.size >= TTS_CACHE_MAX_ENTRIES) {
+    const oldest = ttsResultCache.keys().next().value;
+    if (oldest) {
+      ttsResultCache.delete(oldest);
+    }
+  }
+  ttsResultCache.set(key, value);
+}
+
 export async function generateSpeechAudio(
   ai: GoogleGenAI,
   options: {
     text: string;
     mode?: TranslationMode;
+    voiceGender?: VoiceGender;
   }
 ): Promise<GeneratedSpeechResult> {
+  const gender: VoiceGender = options.voiceGender === 'male' ? 'male' : 'female';
+  const resolvedMode: TranslationMode = options.mode === 'chat' ? 'chat' : 'formal';
+  const cacheKey = `${gender}:${resolvedMode}:${options.text.trim().toLowerCase()}`;
+  const cached = getCachedTts(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const voiceName = TTS_VOICES[gender];
+  const speakerLabel =
+    gender === 'male'
+      ? 'Natural native American English male speaker'
+      : 'Natural native American English female speaker';
   const style =
-    options.mode === 'formal'
-      ? 'Natural native American English female speaker, clear, warm, articulate pronunciation'
-      : 'Natural native American English female speaker, relaxed, friendly everyday local pronunciation';
+    resolvedMode === 'chat'
+      ? `${speakerLabel}, relaxed, friendly everyday local pronunciation`
+      : `${speakerLabel}, clear, warm, articulate local pronunciation`;
+
+  const now = Date.now();
+  const modelsToTry = [TTS_MODEL, TTS_FALLBACK_MODEL].filter(
+    (model) => (ttsModelCooldownUntil.get(model) ?? 0) <= now
+  );
+
+  if (modelsToTry.length === 0) {
+    const quotaErr = new Error('RESOURCE_EXHAUSTED: GenerateRequestsPerDay limit exceeded') as Error & {
+      status?: number;
+    };
+    quotaErr.status = 429;
+    throw quotaErr;
+  }
 
   let lastError: unknown = null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const response = await ai.models.generateContent({
-        model: TTS_MODEL,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: options.text,
-                speechMetadata: {
-                  style,
+  for (const model of modelsToTry) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: options.text,
+                  speechMetadata: {
+                    style,
+                  },
                 },
+              ],
+            },
+          ],
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName },
               },
-            ],
-          },
-        ],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: TTS_VOICE_NAME },
             },
           },
-        },
-      });
+        });
 
-      const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-      const audioBase64 = inlineData?.data ?? '';
-      if (!audioBase64) {
-        throw new Error('EMPTY_TTS_OUTPUT');
+        const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        const audioBase64 = inlineData?.data ?? '';
+        if (!audioBase64) {
+          throw new Error('EMPTY_TTS_OUTPUT');
+        }
+
+        const result: GeneratedSpeechResult = {
+          audioBase64,
+          mimeType: inlineData?.mimeType || 'audio/wav',
+        };
+        setCachedTts(cacheKey, result);
+        return result;
+      } catch (err: unknown) {
+        lastError = err;
+        const info = inspectGeminiError(err);
+
+        if (info.isAuthError || info.isLocationUnsupported) {
+          throw err;
+        }
+
+        if (info.isDailyQuota) {
+          ttsModelCooldownUntil.set(model, Date.now() + TTS_QUOTA_COOLDOWN_MS);
+          break;
+        }
+
+        if (info.isNotFound) {
+          ttsModelCooldownUntil.set(model, Date.now() + TTS_QUOTA_COOLDOWN_MS);
+          break;
+        }
+
+        if (attempt === 0 && (info.isRateLimit || info.isTransient)) {
+          const retryMs =
+            info.retryAfterSeconds !== null && info.retryAfterSeconds * 1000 <= 3000
+              ? Math.max(1000, info.retryAfterSeconds * 1000)
+              : 1200;
+          await sleep(retryMs);
+          continue;
+        }
+
+        break;
       }
-
-      return {
-        audioBase64,
-        mimeType: inlineData?.mimeType || 'audio/wav',
-      };
-    } catch (err: unknown) {
-      lastError = err;
-      const info = inspectGeminiError(err);
-
-      if (info.isAuthError || info.isLocationUnsupported || info.isDailyQuota) {
-        throw err;
-      }
-
-      if (attempt === 0 && (info.isRateLimit || info.isTransient)) {
-        const retryMs =
-          info.retryAfterSeconds !== null && info.retryAfterSeconds * 1000 <= 4000
-            ? Math.max(1200, info.retryAfterSeconds * 1000)
-            : 1500;
-        await sleep(retryMs);
-        continue;
-      }
-
-      throw err;
     }
   }
 

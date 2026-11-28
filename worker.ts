@@ -1,8 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
-import { TargetLanguage, TranslationMode } from './shared/prompts';
+import { TargetLanguage, TranslationMode, VoiceGender } from './shared/prompts';
+import { EdgeSocketConnector, synthesizeWithEdgeTts } from './shared/edgeTts';
 import {
   formatGeminiUserError,
-  generateSpeechAudio,
   generateStudyAnalysis,
   inspectGeminiError,
   openTranslateStreamWithFallback,
@@ -74,11 +74,7 @@ interface NormalizedStudyPayload {
 interface TtsBody {
   text?: string;
   mode?: TranslationMode;
-}
-
-interface NormalizedTtsPayload {
-  text: string;
-  mode: TranslationMode;
+  voiceGender?: VoiceGender;
 }
 
 // Cloudflare edge PoPs where Google Gemini API returns HTTP 400 (User location is not supported)
@@ -175,7 +171,6 @@ function missingKeyResponse(env: CloudflareEnv): Response {
 
 let cachedWorkerKey = '';
 let cachedWorkerClient: GoogleGenAI | null = null;
-let cachedWorkerTtsClient: GoogleGenAI | null = null;
 
 function getOrCreateClient(apiKey: string): GoogleGenAI {
   if (!cachedWorkerClient || cachedWorkerKey !== apiKey) {
@@ -188,31 +183,72 @@ function getOrCreateClient(apiKey: string): GoogleGenAI {
         },
       },
     });
-    cachedWorkerTtsClient = null;
   }
   return cachedWorkerClient;
 }
 
-function getOrCreateTtsClient(apiKey: string): GoogleGenAI {
-  if (!cachedWorkerTtsClient || cachedWorkerKey !== apiKey) {
-    cachedWorkerKey = apiKey;
-    cachedWorkerTtsClient = new GoogleGenAI({
-      apiKey,
-      apiVersion: 'v1beta',
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return cachedWorkerTtsClient;
+interface CloudflareWebSocket extends WebSocket {
+  accept(): void;
 }
+
+const workerEdgeSocketConnector: EdgeSocketConnector = async ({ url, headers }) => {
+  const resp = await fetch(url, {
+    headers: {
+      ...headers,
+      Upgrade: 'websocket',
+    },
+  });
+
+  const ws = (resp as Response & { webSocket?: CloudflareWebSocket }).webSocket;
+  if (resp.status !== 101 || !ws) {
+    const err = new Error(`EDGE_HTTP_${resp.status}`) as Error & {
+      statusCode?: number;
+      serverDate?: string;
+    };
+    err.statusCode = resp.status;
+    err.serverDate = resp.headers.get('date') ?? undefined;
+    throw err;
+  }
+
+  ws.accept();
+
+  return {
+    send: (data) => ws.send(data),
+    close: () => ws.close(),
+    onOpen: (cb) => {
+      queueMicrotask(cb);
+    },
+    onTextMessage: (cb) => {
+      ws.addEventListener('message', (event) => {
+        if (typeof event.data === 'string') {
+          cb(event.data);
+        }
+      });
+    },
+    onBinaryMessage: (cb) => {
+      ws.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          cb(new Uint8Array(event.data));
+        } else if (ArrayBuffer.isView(event.data)) {
+          cb(new Uint8Array(event.data.buffer, event.data.byteOffset, event.data.byteLength));
+        }
+      });
+    },
+    onError: (cb) => {
+      ws.addEventListener('error', () => {
+        cb(new Error('EDGE_WORKER_WS_ERROR'));
+      });
+    },
+    onClose: (cb) => {
+      ws.addEventListener('close', () => cb());
+    },
+  };
+};
 
 async function forwardToUsProxy(
   env: CloudflareEnv,
-  pathname: '/api/translate' | '/api/study' | '/api/tts',
-  payload: NormalizedTranslatePayload | NormalizedStudyPayload | NormalizedTtsPayload
+  pathname: '/api/translate' | '/api/study',
+  payload: NormalizedTranslatePayload | NormalizedStudyPayload
 ): Promise<Response | null> {
   if (!env.GEMINI_PROXY) return null;
   const id = env.GEMINI_PROXY.idFromName('gemini-us-west-v1');
@@ -298,7 +334,7 @@ async function handleTranslate(
   }
 
   const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
-  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+  const mode: TranslationMode = body.mode === 'chat' ? 'chat' : 'formal';
   const targetLang: TargetLanguage = body.targetLang === 'vi' ? 'vi' : 'en';
 
   if (!rawText) {
@@ -377,7 +413,7 @@ async function handleStudy(
     typeof body.sourceText === 'string' ? sanitizeInputText(body.sourceText) : '';
   const translatedText =
     typeof body.translatedText === 'string' ? sanitizeInputText(body.translatedText) : '';
-  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+  const mode: TranslationMode = body.mode === 'chat' ? 'chat' : 'formal';
 
   if (!sourceText && !translatedText) {
     return jsonResponse({ error: 'Thiếu nội dung câu cần phân tích.' }, 400);
@@ -407,45 +443,7 @@ async function handleStudy(
   return runGeminiStudy(payload, env, allowProxyFallback);
 }
 
-async function runGeminiTts(
-  payload: NormalizedTtsPayload,
-  env: CloudflareEnv,
-  allowProxyFallback: boolean
-): Promise<Response> {
-  const apiKey = await resolveApiKey(env);
-  if (!apiKey) {
-    return missingKeyResponse(env);
-  }
-
-  try {
-    const ai = getOrCreateTtsClient(apiKey);
-    const speech = await generateSpeechAudio(ai, payload);
-    return jsonResponse(speech as unknown as Record<string, unknown>, 200, {
-      'Cache-Control': 'no-store',
-    });
-  } catch (err) {
-    const info = inspectGeminiError(err);
-
-    if (allowProxyFallback && info.isLocationUnsupported && env.GEMINI_PROXY) {
-      const proxied = await forwardToUsProxy(env, '/api/tts', payload);
-      if (proxied) {
-        return proxied;
-      }
-    }
-
-    const mapped = formatGeminiUserError(info, 'cloudflare');
-    const extraHeaders = mapped.retryAfterSeconds
-      ? { 'Retry-After': String(mapped.retryAfterSeconds) }
-      : undefined;
-    return jsonResponse({ error: mapped.error }, mapped.status, extraHeaders);
-  }
-}
-
-async function handleTts(
-  request: CloudflareRequest,
-  env: CloudflareEnv,
-  allowProxyFallback: boolean
-): Promise<Response> {
+async function handleTts(request: CloudflareRequest): Promise<Response> {
   let body: TtsBody;
   try {
     body = (await request.json()) as TtsBody;
@@ -454,7 +452,7 @@ async function handleTts(
   }
 
   const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
-  const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+  const voiceGender: VoiceGender = body.voiceGender === 'male' ? 'male' : 'female';
 
   if (!rawText) {
     return jsonResponse({ error: 'Thiếu nội dung cần đọc.' }, 400);
@@ -464,17 +462,23 @@ async function handleTts(
     return jsonResponse({ error: 'Đoạn văn bản quá dài để đọc phát âm.' }, 400);
   }
 
-  const payload: NormalizedTtsPayload = { text: rawText, mode };
-  const colo = (request.cf?.colo ?? '').toUpperCase();
-
-  if (allowProxyFallback && colo && RESTRICTED_COLOS.has(colo) && env.GEMINI_PROXY) {
-    const proxied = await forwardToUsProxy(env, '/api/tts', payload);
-    if (proxied) {
-      return proxied;
-    }
+  try {
+    const speech = await synthesizeWithEdgeTts(
+      { text: rawText, voiceGender },
+      workerEdgeSocketConnector,
+      'https'
+    );
+    return new Response(speech.audioBytes.buffer as ArrayBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': speech.mimeType,
+        'X-Cydia-Translate': '1',
+        'Cache-Control': 'private, max-age=3600',
+      },
+    });
+  } catch {
+    return jsonResponse({ error: 'Không thể tạo giọng đọc lúc này.' }, 502);
   }
-
-  return runGeminiTts(payload, env, allowProxyFallback);
 }
 
 export class GeminiRegionProxy {
@@ -495,7 +499,7 @@ export class GeminiRegionProxy {
       return handleStudy(request as CloudflareRequest, this.env, false);
     }
     if (request.method === 'POST' && url.pathname === '/api/tts') {
-      return handleTts(request as CloudflareRequest, this.env, false);
+      return handleTts(request as CloudflareRequest);
     }
     return handleTranslate(request as CloudflareRequest, this.env, false);
   }
@@ -530,7 +534,7 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/tts') {
-      return handleTts(request as CloudflareRequest, env, true);
+      return handleTts(request as CloudflareRequest);
     }
 
     const assetResponse = await env.ASSETS.fetch(request);

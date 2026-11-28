@@ -1,6 +1,11 @@
-import { StudyAnalysis, StudyHighlightSegment, TranslationMode } from '../shared/prompts';
+import {
+  StudyAnalysis,
+  StudyHighlightSegment,
+  TranslationMode,
+  VoiceGender,
+} from '../shared/prompts';
 
-export type { StudyAnalysis, StudyHighlightSegment, TranslationMode };
+export type { StudyAnalysis, StudyHighlightSegment, TranslationMode, VoiceGender };
 
 export interface ChatMessage {
   id: string;

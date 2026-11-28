@@ -7,12 +7,13 @@ import {
   StudyAnalysis,
   ThemePreset,
   TranslationMode,
+  VoiceGender,
 } from './types';
 import { INITIAL_MESSAGES } from './defaults';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { ChatPanel } from './components/ChatPanel';
 import { copyTextToClipboard } from './utils/formatters';
-import { createPlayableAudioUrl } from './utils/audio';
+import { speakWithBrowserVoice, stopBrowserVoice } from './utils/audio';
 import {
   THEME_STORAGE_KEY,
   applyThemeCssVars,
@@ -33,8 +34,9 @@ const SavedLessonsModal = lazy(() =>
   import('./components/SavedLessonsModal').then((m) => ({ default: m.SavedLessonsModal }))
 );
 
-const MODE_STORAGE_KEY = 'cydia_translate_mode_v2';
-const MODE_COOKIE_KEY = 'cydia_mode_v1';
+const DEFAULT_MODE: TranslationMode = 'formal';
+const VOICE_STORAGE_KEY = 'cydia_translate_voice_v1';
+const VOICE_COOKIE_KEY = 'cydia_voice_v1';
 const MESSAGES_STORAGE_KEY = 'cydia_translate_messages_v2';
 const MESSAGES_DAY_STORAGE_KEY = 'cydia_translate_messages_day_v1';
 const SAVED_LESSONS_STORAGE_KEY = 'cydia_translate_saved_lessons_v1';
@@ -48,59 +50,59 @@ interface ActiveStudyView {
   data: StudyAnalysis | null;
 }
 
-function normalizeMode(raw: unknown): TranslationMode {
-  return raw === 'formal' ? 'formal' : 'chat';
+function normalizeVoiceGender(raw: unknown): VoiceGender {
+  return raw === 'male' ? 'male' : 'female';
 }
 
-function readModeCookie(): TranslationMode | null {
+function readVoiceCookie(): VoiceGender | null {
   try {
     const match = document.cookie
       .split('; ')
-      .find((row) => row.startsWith(`${MODE_COOKIE_KEY}=`));
+      .find((row) => row.startsWith(`${VOICE_COOKIE_KEY}=`));
     if (!match) return null;
-    const decoded = decodeURIComponent(match.slice(MODE_COOKIE_KEY.length + 1)).trim();
-    if (decoded === 'formal' || decoded === 'chat') return decoded;
+    const decoded = decodeURIComponent(match.slice(VOICE_COOKIE_KEY.length + 1)).trim();
+    if (decoded === 'male' || decoded === 'female') return decoded;
     return null;
   } catch {
     return null;
   }
 }
 
-function persistModeSetting(nextMode: TranslationMode): void {
-  const safe = normalizeMode(nextMode);
+function persistVoiceSetting(nextVoice: VoiceGender): void {
+  const safe = normalizeVoiceGender(nextVoice);
   try {
-    window.localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(safe));
+    window.localStorage.setItem(VOICE_STORAGE_KEY, JSON.stringify(safe));
   } catch {
     // Ignore storage quota errors
   }
   try {
-    document.cookie = `${MODE_COOKIE_KEY}=${encodeURIComponent(safe)}; path=/; max-age=31536000; SameSite=Lax`;
+    document.cookie = `${VOICE_COOKIE_KEY}=${encodeURIComponent(safe)}; path=/; max-age=31536000; SameSite=Lax`;
   } catch {
     // Ignore cookie errors
   }
 }
 
-function loadSavedMode(): TranslationMode {
+function loadSavedVoiceGender(): VoiceGender {
   try {
-    const raw = window.localStorage.getItem(MODE_STORAGE_KEY);
+    const raw = window.localStorage.getItem(VOICE_STORAGE_KEY);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        if (parsed === 'formal' || parsed === 'chat') return parsed;
+        if (parsed === 'male' || parsed === 'female') return parsed;
       } catch {
         const trimmed = raw.trim();
-        if (trimmed === 'formal' || trimmed === 'chat') return trimmed;
+        if (trimmed === 'male' || trimmed === 'female') return trimmed;
       }
     }
   } catch {
     // Fall through to cookie backup
   }
-  const fromCookie = readModeCookie();
+  const fromCookie = readVoiceCookie();
   if (fromCookie) {
-    persistModeSetting(fromCookie);
+    persistVoiceSetting(fromCookie);
     return fromCookie;
   }
-  return 'chat';
+  return 'female';
 }
 
 function getLocalDateKey(date: Date = new Date()): string {
@@ -147,7 +149,7 @@ function purgeExpiredMessagesBeforeHydrate(): void {
 }
 
 purgeExpiredMessagesBeforeHydrate();
-const INITIAL_SAVED_MODE = loadSavedMode();
+const INITIAL_SAVED_VOICE = loadSavedVoiceGender();
 const INITIAL_SAVED_THEME = loadSavedTheme();
 applyThemeCssVars(INITIAL_SAVED_THEME);
 
@@ -167,9 +169,9 @@ function CydiaStarMark() {
 }
 
 export default function App() {
-  const [storedMode, setStoredMode] = useLocalStorage<TranslationMode>(
-    MODE_STORAGE_KEY,
-    INITIAL_SAVED_MODE
+  const [storedVoiceGender, setStoredVoiceGender] = useLocalStorage<VoiceGender>(
+    VOICE_STORAGE_KEY,
+    INITIAL_SAVED_VOICE
   );
   const [storedTheme, setStoredTheme] = useLocalStorage<ChatTheme>(
     THEME_STORAGE_KEY,
@@ -191,17 +193,9 @@ export default function App() {
 
   const [todayKey, setTodayKey] = useState<string>(() => getLocalDateKey());
 
-  const mode = normalizeMode(storedMode);
+  const mode: TranslationMode = DEFAULT_MODE;
+  const voiceGender = normalizeVoiceGender(storedVoiceGender);
   const theme = useMemo(() => normalizeTheme(storedTheme), [storedTheme]);
-
-  const handleModeChange = useCallback(
-    (nextMode: TranslationMode) => {
-      const safe = normalizeMode(nextMode);
-      persistModeSetting(safe);
-      setStoredMode(safe);
-    },
-    [setStoredMode]
-  );
 
   const handleThemeChange = useCallback(
     (nextTheme: ChatTheme) => {
@@ -351,20 +345,22 @@ export default function App() {
   }, [setMessages]);
 
   useEffect(() => {
-    persistModeSetting(mode);
-  }, [mode]);
+    persistVoiceSetting(voiceGender);
+  }, [voiceGender]);
 
   useEffect(() => {
     applyThemeCssVars(theme);
     persistThemeSetting(theme);
   }, [theme]);
 
-  // Silently warm up Worker / US region proxy & TLS connection while user types first message
+  // Silently warm up Worker / US region proxy
   useEffect(() => {
-    const timer = window.setTimeout(() => {
+    const pingTimer = window.setTimeout(() => {
       void fetch('/api/ping', { method: 'GET', keepalive: true }).catch(() => {});
     }, 150);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(pingTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -1001,12 +997,25 @@ export default function App() {
       ttsAbortRef.current = null;
     }
     if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
+    stopBrowserVoice();
     setSpeakingKey(null);
     setLoadingSpeechKey(null);
   }, []);
+
+  const handleVoiceGenderChange = useCallback(
+    (nextVoice: VoiceGender) => {
+      const safe = normalizeVoiceGender(nextVoice);
+      stopSpeech();
+      persistVoiceSetting(safe);
+      setStoredVoiceGender(safe);
+    },
+    [setStoredVoiceGender, stopSpeech]
+  );
 
   useEffect(() => {
     const cache = ttsCacheRef.current;
@@ -1018,13 +1027,14 @@ export default function App() {
         audioRef.current.pause();
         audioRef.current.src = '';
       }
+      stopBrowserVoice();
       cache.forEach((url) => URL.revokeObjectURL(url));
       cache.clear();
     };
   }, []);
 
   const handleSpeak = useCallback(
-    async (key: string, text: string, targetMode?: TranslationMode) => {
+    async (key: string, text: string, _targetMode?: TranslationMode) => {
       const cleanText = text.trim();
       if (!cleanText) return;
 
@@ -1042,8 +1052,7 @@ export default function App() {
       }
       const audio = audioRef.current;
 
-      const resolvedMode = targetMode ?? mode;
-      const cacheKey = `${resolvedMode}:${cleanText}`;
+      const cacheKey = `${voiceGender}:${cleanText}`;
       const cachedUrl = ttsCacheRef.current.get(cacheKey);
 
       const playUrl = async (url: string) => {
@@ -1059,6 +1068,18 @@ export default function App() {
         try {
           await audio.play();
         } catch {
+          setSpeakingKey((prev) => (prev === key ? null : prev));
+        }
+      };
+
+      const playBrowserFallback = () => {
+        setLoadingSpeechKey(null);
+        setSpeakingKey(key);
+        const ok = speakWithBrowserVoice(cleanText, voiceGender, {
+          onEnd: () => setSpeakingKey((prev) => (prev === key ? null : prev)),
+          onError: () => setSpeakingKey((prev) => (prev === key ? null : prev)),
+        });
+        if (!ok) {
           setSpeakingKey((prev) => (prev === key ? null : prev));
         }
       };
@@ -1084,19 +1105,29 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
-          body: JSON.stringify({ text: cleanText, mode: resolvedMode }),
+          body: JSON.stringify({
+            text: cleanText,
+            voiceGender,
+          }),
         });
 
-        if (!res.ok) {
+        const contentType = (res.headers.get('content-type') || '').toLowerCase();
+        if (!res.ok || !contentType.startsWith('audio/')) {
+          throw new Error(`TTS_HTTP_${res.status}`);
+        }
+
+        const audioBlob = await res.blob();
+        if (audioBlob.size === 0) {
+          throw new Error('TTS_EMPTY_BLOB');
+        }
+
+        const objectUrl = URL.createObjectURL(audioBlob);
+
+        if (controller.signal.aborted || ttsAbortRef.current !== controller) {
+          URL.revokeObjectURL(objectUrl);
           return;
         }
 
-        const data = (await res.json()) as { audioBase64?: string; mimeType?: string };
-        if (!data.audioBase64 || ttsAbortRef.current !== controller) {
-          return;
-        }
-
-        const objectUrl = createPlayableAudioUrl(data.audioBase64, data.mimeType);
         if (ttsCacheRef.current.size >= 40) {
           const oldestKey = ttsCacheRef.current.keys().next().value;
           if (oldestKey) {
@@ -1109,8 +1140,13 @@ export default function App() {
 
         setLoadingSpeechKey(null);
         await playUrl(objectUrl);
-      } catch {
-        // Silently stop on abort or network failure
+      } catch (err: unknown) {
+        if (controller.signal.aborted || (err as { name?: string })?.name === 'AbortError') {
+          return;
+        }
+        if (ttsAbortRef.current === controller) {
+          playBrowserFallback();
+        }
       } finally {
         if (ttsAbortRef.current === controller) {
           ttsAbortRef.current = null;
@@ -1118,7 +1154,7 @@ export default function App() {
         }
       }
     },
-    [loadingSpeechKey, mode, speakingKey, stopSpeech]
+    [loadingSpeechKey, speakingKey, stopSpeech, voiceGender]
   );
 
   const handleClearChat = () => {
@@ -1180,6 +1216,7 @@ export default function App() {
         copiedMessageId={copiedMessageId}
         speakingKey={speakingKey}
         loadingSpeechKey={loadingSpeechKey}
+        voiceGender={voiceGender}
         onCopyMessage={triggerCopy}
         onSend={handleSend}
         onStop={handleStop}
@@ -1226,10 +1263,10 @@ export default function App() {
         <Suspense fallback={null}>
           <ThemeSettingsModal
             isOpen={showThemeSettings}
-            mode={mode}
+            voiceGender={voiceGender}
             theme={theme}
             savedThemes={savedThemes}
-            onModeChange={handleModeChange}
+            onVoiceGenderChange={handleVoiceGenderChange}
             onThemeChange={handleThemeChange}
             onSaveCustomTheme={handleSaveCustomTheme}
             onDeleteCustomTheme={handleDeleteCustomTheme}

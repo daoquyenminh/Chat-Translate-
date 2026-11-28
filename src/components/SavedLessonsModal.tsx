@@ -65,7 +65,7 @@ export function SavedLessonsModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="saved-lessons-title"
-        className="w-full md:max-w-[780px] bg-white rounded-t-3xl md:rounded-3xl border border-[#EAEAEA] shadow-xl overflow-hidden flex flex-col max-h-[86dvh] md:max-h-[80dvh]"
+        className="w-full md:max-w-[92vw] xl:max-w-[1220px] bg-white rounded-t-3xl md:rounded-3xl border border-[#EAEAEA] shadow-xl overflow-hidden flex flex-col max-h-[86dvh] md:max-h-[86dvh]"
       >
         {/* Mobile grab handle */}
         <div className="md:hidden flex justify-center pt-2.5 pb-1 shrink-0">
@@ -144,7 +144,7 @@ export function SavedLessonsModal({
               Không tìm thấy bài học khớp với &ldquo;{query.trim()}&rdquo;.
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {filteredLessons.map((lesson) => (
                 <div
                   key={lesson.id}

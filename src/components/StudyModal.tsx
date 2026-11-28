@@ -157,7 +157,7 @@ export function StudyModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 backdrop-blur-[2px] p-0 md:p-6"
+      className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 backdrop-blur-[2px] p-0 md:p-5"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -166,7 +166,7 @@ export function StudyModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="study-modal-title"
-        className="w-full md:max-w-[900px] lg:max-w-[980px] bg-white rounded-t-3xl md:rounded-3xl border border-[#EAEAEA] shadow-xl overflow-hidden flex flex-col max-h-[88dvh] md:max-h-[82dvh]"
+        className="w-full md:max-w-[95vw] xl:max-w-[1420px] bg-white rounded-t-3xl md:rounded-3xl border border-[#EAEAEA] shadow-xl overflow-hidden flex flex-col max-h-[88dvh] md:max-h-[90dvh]"
       >
         {/* Mobile grab handle */}
         <div className="md:hidden flex justify-center pt-2.5 pb-1 shrink-0">
@@ -174,7 +174,7 @@ export function StudyModal({
         </div>
 
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 px-5 md:px-6 h-[56px] border-b border-[#EFEFF1] shrink-0">
+        <div className="flex items-center justify-between gap-3 px-5 md:px-6 h-[54px] border-b border-[#EFEFF1] shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <h2
               id="study-modal-title"
@@ -213,10 +213,10 @@ export function StudyModal({
           </div>
         </div>
 
-        {/* Body: vertical stack on mobile, 2-column horizontal layout on PC */}
+        {/* Body: vertical stack on mobile, wide 3-column horizontal layout on PC */}
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
           {showLoader ? (
-            <div className="py-12 px-5 md:px-10 max-w-[520px] mx-auto space-y-5">
+            <div className="py-12 px-5 md:px-10 max-w-[540px] mx-auto space-y-5">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-[14px] font-medium text-[#111111]">
                   {getLoadingStageLabel(progress)}
@@ -268,10 +268,10 @@ export function StudyModal({
               </button>
             </div>
           ) : data ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-[#F0F0F2]">
-              {/* Left column (PC) / Top (Mobile): Error analysis & Usage context */}
-              <div className="px-5 md:px-6 py-5 space-y-6">
-                <section className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 md:divide-x md:divide-[#F0F0F2]">
+              {/* Column 1: Original vs Corrected + Usage Context */}
+              <div className="px-5 md:px-5 py-4 md:py-5 space-y-5">
+                <section className="space-y-2.5">
                   <h3 className="flex items-baseline gap-2 text-[15px] font-bold tracking-tight text-[#111111]">
                     <span className="text-[12px] font-semibold tabular-nums text-[var(--cydia-accent)]">
                       01.
@@ -280,14 +280,14 @@ export function StudyModal({
                   </h3>
 
                   <div className="rounded-2xl border border-[#EAEAEA] divide-y divide-[#F0F0F2] bg-[#FAFAFA]/60">
-                    <div className="px-4 py-3.5 space-y-1">
+                    <div className="px-4 py-3 space-y-1">
                       <div className="text-[12px] font-medium text-[#71717A]">Câu bạn viết</div>
-                      <p className="text-[15px] leading-[1.6] text-[#111111] whitespace-pre-wrap break-words">
+                      <p className="text-[14.5px] leading-[1.55] text-[#111111] whitespace-pre-wrap break-words">
                         {renderSegments(data.originalSegments)}
                       </p>
                     </div>
 
-                    <div className="px-4 py-3.5 bg-white rounded-b-2xl space-y-1">
+                    <div className="px-4 py-3 bg-white rounded-b-2xl space-y-1">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[12px] font-medium text-[#71717A]">
                           Câu tiếng Anh chuẩn
@@ -307,7 +307,9 @@ export function StudyModal({
                             ) : (
                               <Volume2 className="w-3.5 h-3.5" strokeWidth={2} />
                             )}
-                            <span>{speakingKey === 'study-main' ? 'Đang đọc' : 'Nghe'}</span>
+                            <span>
+                              {speakingKey === 'study-main' ? 'Đang đọc' : 'Nghe'}
+                            </span>
                           </button>
 
                           <button
@@ -329,32 +331,13 @@ export function StudyModal({
                           </button>
                         </div>
                       </div>
-                      <p className="text-[15px] leading-[1.6] text-[#111111] whitespace-pre-wrap break-words">
+                      <p className="text-[14.5px] leading-[1.55] text-[#111111] whitespace-pre-wrap break-words">
                         {renderSegments(data.correctedSegments)}
                       </p>
                     </div>
                   </div>
 
-                  {data.mistakes.length > 0 ? (
-                    <ul className="divide-y divide-[#F0F0F2] border border-[#EAEAEA] rounded-2xl bg-white">
-                      {data.mistakes.map((item, idx) => (
-                        <li key={idx} className="px-4 py-3 space-y-1">
-                          <div className="flex flex-wrap items-center gap-1.5 text-[14px]">
-                            <span className="bg-red-50 text-red-700 line-through decoration-red-400 px-1.5 py-0.5 rounded-md font-medium">
-                              {item.wrong}
-                            </span>
-                            <ArrowRight className="w-3.5 h-3.5 text-[#A1A1AA] shrink-0" />
-                            <span className="bg-emerald-50 text-emerald-800 px-1.5 py-0.5 rounded-md font-semibold">
-                              {item.correct}
-                            </span>
-                          </div>
-                          <p className="text-[13px] leading-[1.55] text-[#52525B]">
-                            {item.explanation}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
+                  {data.mistakes.length === 0 && (
                     <p className="text-[13px] text-[#71717A] leading-relaxed">
                       {data.inputType === 'vietnamese'
                         ? 'Câu gốc là tiếng Việt — phần tô sáng ở câu chuẩn là cấu trúc quan trọng nên nhớ.'
@@ -363,27 +346,95 @@ export function StudyModal({
                   )}
                 </section>
 
-                <section className="space-y-2.5 pt-4 border-t border-[#F0F0F2]">
+                <section className="space-y-2 pt-4 border-t border-[#F0F0F2]">
                   <h3 className="flex items-baseline gap-2 text-[15px] font-bold tracking-tight text-[#111111]">
                     <span className="text-[12px] font-semibold tabular-nums text-[var(--cydia-accent)]">
                       02.
                     </span>
                     <span>Khi nào nên dùng</span>
                   </h3>
-                  <p className="text-[14px] leading-[1.65] text-[#27272A]">
+                  <p className="text-[13.5px] leading-[1.6] text-[#27272A]">
                     {data.usageContext}
                   </p>
                 </section>
               </div>
 
-              {/* Right column (PC) / Bottom (Mobile): Alternatives & Key takeaways */}
-              <div className="px-5 md:px-6 pb-5 pt-0 md:py-5 space-y-6">
+              {/* Column 2: Detailed Mistake Fixes + Key Takeaways */}
+              <div className="px-5 md:px-5 pb-4 pt-0 md:py-5 space-y-5">
+                {data.mistakes.length > 0 && (
+                  <section className="space-y-2.5 pt-4 md:pt-0 border-t md:border-t-0 border-[#F0F0F2]">
+                    <h3 className="flex items-baseline gap-2 text-[15px] font-bold tracking-tight text-[#111111]">
+                      <span className="text-[12px] font-semibold tabular-nums text-[var(--cydia-accent)]">
+                        03.
+                      </span>
+                      <span>Chi tiết lỗi đã sửa</span>
+                    </h3>
+
+                    <ul className="divide-y divide-[#F0F0F2] border border-[#EAEAEA] rounded-2xl bg-white">
+                      {data.mistakes.map((item, idx) => (
+                        <li key={idx} className="px-3.5 py-2.5 space-y-1">
+                          <div className="flex flex-wrap items-center gap-1.5 text-[13.5px]">
+                            <span className="bg-red-50 text-red-700 line-through decoration-red-400 px-1.5 py-0.5 rounded-md font-medium">
+                              {item.wrong}
+                            </span>
+                            <ArrowRight className="w-3.5 h-3.5 text-[#A1A1AA] shrink-0" />
+                            <span className="bg-emerald-50 text-emerald-800 px-1.5 py-0.5 rounded-md font-semibold">
+                              {item.correct}
+                            </span>
+                          </div>
+                          <p className="text-[13px] leading-[1.5] text-[#52525B]">
+                            {item.explanation}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {data.keyTakeaways.length > 0 && (
+                  <section
+                    className={`space-y-2.5 ${
+                      data.mistakes.length > 0
+                        ? 'pt-4 border-t border-[#F0F0F2]'
+                        : 'pt-4 md:pt-0 border-t md:border-t-0 border-[#F0F0F2]'
+                    }`}
+                  >
+                    <h3 className="flex items-baseline gap-2 text-[15px] font-bold tracking-tight text-[#111111]">
+                      <span className="text-[12px] font-semibold tabular-nums text-[var(--cydia-accent)]">
+                        {data.mistakes.length > 0 ? '04.' : '03.'}
+                      </span>
+                      <span>Cụm từ &amp; điểm cần nhớ</span>
+                    </h3>
+                    <div className="divide-y divide-[#F0F0F2] border border-[#EAEAEA] rounded-2xl bg-white overflow-hidden">
+                      {data.keyTakeaways.map((tip, idx) => (
+                        <div key={idx} className="px-3.5 py-2.5 space-y-0.5">
+                          <div className="flex flex-wrap items-baseline gap-1.5 text-[13.5px]">
+                            <span className="font-semibold text-[#111111]">{tip.phrase}</span>
+                            <span aria-hidden="true" className="text-[#D4D4D8]">
+                              ·
+                            </span>
+                            <span className="text-[#52525B]">{tip.meaning}</span>
+                          </div>
+                          {tip.note && (
+                            <p className="text-[12.5px] text-[#71717A] leading-[1.45]">
+                              {tip.note}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
+
+              {/* Column 3: Alternative Expressions */}
+              <div className="px-5 md:px-5 pb-5 pt-0 xl:py-5 md:col-span-2 xl:col-span-1 md:border-t xl:border-t-0 border-[#F0F0F2]">
                 {data.alternatives.length > 0 && (
-                  <section className="space-y-3 pt-4 md:pt-0 border-t md:border-t-0 border-[#F0F0F2]">
+                  <section className="space-y-2.5 pt-4 xl:pt-0 border-t md:border-t-0 border-[#F0F0F2]">
                     <div className="flex items-baseline justify-between gap-2">
                       <h3 className="flex items-baseline gap-2 text-[15px] font-bold tracking-tight text-[#111111]">
                         <span className="text-[12px] font-semibold tabular-nums text-[var(--cydia-accent)]">
-                          03.
+                          {data.mistakes.length > 0 ? '05.' : '04.'}
                         </span>
                         <span>Cách nói thay thế khác</span>
                       </h3>
@@ -401,10 +452,10 @@ export function StudyModal({
                             key={key}
                             type="button"
                             onClick={() => void handleCopy(key, alt.english)}
-                            className="w-full px-4 py-3 text-left hover:bg-[#FAFAFA] active:bg-[#F4F4F5] transition-colors cursor-pointer space-y-1"
+                            className="w-full px-3.5 py-2.5 text-left hover:bg-[#FAFAFA] active:bg-[#F4F4F5] transition-colors cursor-pointer space-y-1"
                           >
                             <div className="flex items-start justify-between gap-3">
-                              <span className="text-[14px] font-medium text-[#111111] leading-[1.5]">
+                              <span className="text-[13.5px] font-medium text-[#111111] leading-[1.45]">
                                 {alt.english}
                               </span>
                               <span className="shrink-0 text-[12px] text-[#8E8E93] pt-0.5 whitespace-nowrap">
@@ -418,41 +469,12 @@ export function StudyModal({
                                 )}
                               </span>
                             </div>
-                            <div className="text-[13px] italic text-[#71717A] leading-[1.45]">
+                            <div className="text-[12.5px] italic text-[#71717A] leading-[1.45]">
                               {alt.vietnamese}
                             </div>
                           </button>
                         );
                       })}
-                    </div>
-                  </section>
-                )}
-
-                {data.keyTakeaways.length > 0 && (
-                  <section className="space-y-3 pt-4 border-t border-[#F0F0F2]">
-                    <h3 className="flex items-baseline gap-2 text-[15px] font-bold tracking-tight text-[#111111]">
-                      <span className="text-[12px] font-semibold tabular-nums text-[var(--cydia-accent)]">
-                        04.
-                      </span>
-                      <span>Cụm từ &amp; điểm cần nhớ</span>
-                    </h3>
-                    <div className="divide-y divide-[#F0F0F2] border border-[#EAEAEA] rounded-2xl bg-white overflow-hidden">
-                      {data.keyTakeaways.map((tip, idx) => (
-                        <div key={idx} className="px-4 py-3 space-y-0.5">
-                          <div className="flex flex-wrap items-baseline gap-1.5 text-[14px]">
-                            <span className="font-semibold text-[#111111]">{tip.phrase}</span>
-                            <span aria-hidden="true" className="text-[#D4D4D8]">
-                              ·
-                            </span>
-                            <span className="text-[#52525B]">{tip.meaning}</span>
-                          </div>
-                          {tip.note && (
-                            <p className="text-[13px] text-[#71717A] leading-[1.5]">
-                              {tip.note}
-                            </p>
-                          )}
-                        </div>
-                      ))}
                     </div>
                   </section>
                 )}

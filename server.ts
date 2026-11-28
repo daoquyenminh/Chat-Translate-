@@ -4,10 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
-import { TargetLanguage, TranslationMode } from './shared/prompts';
+import WebSocket from 'ws';
+import { TargetLanguage, TranslationMode, VoiceGender } from './shared/prompts';
+import { EdgeSocketConnector, synthesizeWithEdgeTts } from './shared/edgeTts';
 import {
   formatGeminiUserError,
-  generateSpeechAudio,
   generateStudyAnalysis,
   inspectGeminiError,
   openTranslateStreamWithFallback,
@@ -35,10 +36,10 @@ interface StudyRequestBody {
 interface TtsRequestBody {
   text?: string;
   mode?: TranslationMode;
+  voiceGender?: VoiceGender;
 }
 
 let cachedClient: GoogleGenAI | null = null;
-let cachedTtsClient: GoogleGenAI | null = null;
 
 function getGenAIClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -58,24 +59,56 @@ function getGenAIClient(): GoogleGenAI {
   return cachedClient;
 }
 
-function getTtsGenAIClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('MISSING_API_KEY');
-  }
-  if (!cachedTtsClient) {
-    cachedTtsClient = new GoogleGenAI({
-      apiKey,
-      apiVersion: 'v1beta',
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return cachedTtsClient;
-}
+const nodeEdgeSocketConnector: EdgeSocketConnector = async ({ url, headers, timeoutMs }) => {
+  const ws = new WebSocket(url, { headers, handshakeTimeout: timeoutMs });
+  return {
+    send: (data) => ws.send(data),
+    close: () => ws.close(),
+    onOpen: (cb) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        cb();
+      } else {
+        ws.once('open', cb);
+      }
+    },
+    onTextMessage: (cb) => {
+      ws.on('message', (data, isBinary) => {
+        if (!isBinary) {
+          cb(data.toString());
+        }
+      });
+    },
+    onBinaryMessage: (cb) => {
+      ws.on('message', (data, isBinary) => {
+        if (isBinary) {
+          const buf = Buffer.isBuffer(data)
+            ? data
+            : Array.isArray(data)
+            ? Buffer.concat(data)
+            : Buffer.from(data);
+          cb(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+        }
+      });
+    },
+    onError: (cb) => {
+      ws.on('unexpected-response', (_req, res) => {
+        const err = new Error(`EDGE_HTTP_${res.statusCode ?? 0}`) as Error & {
+          statusCode?: number;
+          serverDate?: string;
+        };
+        err.statusCode = res.statusCode;
+        err.serverDate = typeof res.headers.date === 'string' ? res.headers.date : undefined;
+        cb(err);
+      });
+      ws.on('error', (err) => {
+        cb(err instanceof Error ? err : new Error(String(err)));
+      });
+    },
+    onClose: (cb) => {
+      ws.on('close', cb);
+    },
+  };
+};
 
 async function startServer(): Promise<void> {
   const app = express();
@@ -94,7 +127,7 @@ async function startServer(): Promise<void> {
   app.post('/api/translate', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as TranslateRequestBody;
     const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
-    const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+    const mode: TranslationMode = body.mode === 'chat' ? 'chat' : 'formal';
     const targetLang: TargetLanguage = body.targetLang === 'vi' ? 'vi' : 'en';
 
     if (!rawText) {
@@ -158,7 +191,7 @@ async function startServer(): Promise<void> {
       typeof body.sourceText === 'string' ? sanitizeInputText(body.sourceText) : '';
     const translatedText =
       typeof body.translatedText === 'string' ? sanitizeInputText(body.translatedText) : '';
-    const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+    const mode: TranslationMode = body.mode === 'chat' ? 'chat' : 'formal';
 
     if (!sourceText && !translatedText) {
       res.status(400).json({ error: 'Thiếu nội dung câu cần phân tích.' });
@@ -205,7 +238,7 @@ async function startServer(): Promise<void> {
   app.post('/api/tts', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as TtsRequestBody;
     const rawText = typeof body.text === 'string' ? sanitizeInputText(body.text) : '';
-    const mode: TranslationMode = body.mode === 'formal' ? 'formal' : 'chat';
+    const voiceGender: VoiceGender = body.voiceGender === 'male' ? 'male' : 'female';
 
     if (!rawText) {
       res.status(400).json({ error: 'Thiếu nội dung cần đọc.' });
@@ -218,27 +251,19 @@ async function startServer(): Promise<void> {
     }
 
     try {
-      const ai = getTtsGenAIClient();
-      const speech = await generateSpeechAudio(ai, { text: rawText, mode });
+      const speech = await synthesizeWithEdgeTts(
+        { text: rawText, voiceGender },
+        nodeEdgeSocketConnector,
+        'wss'
+      );
 
       res.setHeader('X-Cydia-Translate', '1');
-      res.setHeader('Cache-Control', 'no-store');
-      res.status(200).json(speech);
+      res.setHeader('Content-Type', speech.mimeType);
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.status(200).send(Buffer.from(speech.audioBytes));
     } catch (err: unknown) {
-      if ((err as { message?: string })?.message === 'MISSING_API_KEY') {
-        res.status(500).json({
-          error: 'Chưa cấu hình GEMINI_API_KEY trong Settings > Secrets.',
-        });
-        return;
-      }
-
-      const info = inspectGeminiError(err);
-      const mapped = formatGeminiUserError(info, 'server');
-      if (mapped.retryAfterSeconds) {
-        res.setHeader('Retry-After', String(mapped.retryAfterSeconds));
-      }
-      console.error('[/api/tts] Gemini error:', err);
-      res.status(mapped.status).json({ error: mapped.error });
+      console.warn('[/api/tts] Edge Neural TTS error:', (err as { message?: string })?.message ?? err);
+      res.status(502).json({ error: 'Không thể tạo giọng đọc lúc này.' });
     }
   });
 
